@@ -92,6 +92,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
 
         DispatchQueue.global(qos: .userInitiated).async {
+            if entryScript == bundledEntry, let containerURL = FileManager.default
+                .containerURL(forSecurityApplicationGroupIdentifier: RuntimeConfig.appGroupIdentifier)
+            {
+                // Picked up by the ios-exthost-no-fork.diff patch in
+                // extensionHostConnection.ts: routes the extension host
+                // launch through ExtensionHostRuntime instead of cp.fork(),
+                // and TMPDIR must match what that second process sets so
+                // createRandomIPCHandle()'s socket path resolves for both.
+                setenv("IPADVSCODE_NO_FORK", "1", 1)
+                setenv("IPADVSCODE_SHARED_CONTAINER", containerURL.path, 1)
+                setenv("TMPDIR", containerURL.path, 1)
+            }
             var cArgs = arguments.map { strdup($0) }
             defer { cArgs.forEach { free($0) } }
             cArgs.withUnsafeMutableBufferPointer { buffer in

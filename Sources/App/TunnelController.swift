@@ -22,9 +22,14 @@ final class TunnelController: ObservableObject {
 
     private var nodeRuntimeManager: NETunnelProviderManager?
     private var extensionHostManager: NETunnelProviderManager?
+    private var launchRequestWatcher: DispatchSourceFileSystemObject?
 
     private init() {
         observeExtensionHostLaunchRequests()
+    }
+
+    deinit {
+        launchRequestWatcher?.cancel()
     }
 
     func start() async {
@@ -69,9 +74,10 @@ final class TunnelController: ObservableObject {
         }
     }
 
-    /// Starts ExtensionHostRuntime. Called when NodeRuntimeExtension signals
-    /// (via Darwin notification) that it has written an
-    /// ExtensionHostLaunchRequest and needs the exthost process running.
+    /// Starts ExtensionHostRuntime. Called when the file watcher below sees
+    /// NodeRuntimeExtension has written a fresh ExtensionHostLaunchRequest
+    /// into the shared container and the exthost process needs to be
+    /// (re)started to pick it up.
     private func startExtensionHost() async {
         do {
             let manager = try await loadOrCreateManager(
@@ -79,31 +85,50 @@ final class TunnelController: ObservableObject {
                 description: "iPadVSCode Extension Host"
             )
             extensionHostManager = manager
-            if manager.connection.status != .connected {
-                try manager.connection.startVPNTunnel()
-            }
+            // Always restart: ExtensionHostTunnelProvider reads the launch
+            // request once, at startTunnel — an already-running instance
+            // won't notice a newer request file on its own.
+            manager.connection.stopVPNTunnel()
+            try manager.connection.startVPNTunnel()
         } catch {
             lastError = "\(error)"
         }
     }
 
+    /// Watches the shared App Group container for
+    /// ExtensionHostLaunchRequest writes. This only runs while the app
+    /// process itself is alive (foreground, or briefly backgrounded before
+    /// iOS suspends it) — there is no dispatch-source equivalent that fires
+    /// while fully suspended. NodeRuntimeExtension can't call back into a
+    /// suspended app by any mechanism, Darwin notifications included, so
+    /// this doesn't regress anything by not using those; it just also
+    /// avoids needing a native (N-API) binding on the Node side purely to
+    /// post one.
     private func observeExtensionHostLaunchRequests() {
-        let center = CFNotificationCenterGetDarwinNotifyCenter()
-        let observer = Unmanaged.passUnretained(self).toOpaque()
-        CFNotificationCenterAddObserver(
-            center,
-            observer,
-            { _, observer, _, _, _ in
-                guard let observer else { return }
-                let controller = Unmanaged<TunnelController>.fromOpaque(observer).takeUnretainedValue()
-                Task { @MainActor in
-                    await controller.startExtensionHost()
-                }
-            },
-            exthostLaunchRequestNotificationName,
-            nil,
-            .deliverImmediately
+        guard let containerURL = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: RuntimeConfig.appGroupIdentifier)
+        else {
+            return
+        }
+
+        let fd = open(containerURL.path, O_EVTONLY)
+        guard fd >= 0 else { return }
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write],
+            queue: .main
         )
+        source.setEventHandler { [weak self] in
+            let requestURL = containerURL.appendingPathComponent(ExtensionHostLaunchRequest.fileName)
+            guard FileManager.default.fileExists(atPath: requestURL.path) else { return }
+            Task { @MainActor in
+                await self?.startExtensionHost()
+            }
+        }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        launchRequestWatcher = source
     }
 
     private func loadOrCreateManager(bundleIdentifier: String, description: String) async throws -> NETunnelProviderManager {
