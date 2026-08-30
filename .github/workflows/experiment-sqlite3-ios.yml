@@ -62,7 +62,19 @@ jobs:
           npm install prebuild-for-nodejs-mobile@18.17.7
           npm install nodejs-mobile-gyp@0.4.0
           npm ls nodejs-mobile-gyp || true
-          node -e "console.log(require.resolve('nodejs-mobile-gyp/package.json'))"
+          # Hoisting alone doesn't work here: 0.4.0 (top-level, what we just
+          # installed) and ^0.3.1 (prebuild-for-nodejs-mobile's own
+          # requirement) aren't semver-compatible as 0.x versions, so npm
+          # keeps BOTH — one at top level, one nested inside
+          # node_modules/prebuild-for-nodejs-mobile/node_modules/. Node's
+          # resolution, called from prebuild-for-nodejs-mobile's own code,
+          # finds the nested (old, broken) one first regardless of what's
+          # hoisted — confirmed by a prior attempt still showing
+          # ".../prebuild-for-nodejs-mobile/node_modules/nodejs-mobile-gyp"
+          # in its error output. Force-replace the nested copy directly.
+          rm -rf node_modules/prebuild-for-nodejs-mobile/node_modules/nodejs-mobile-gyp
+          cp -R node_modules/nodejs-mobile-gyp node_modules/prebuild-for-nodejs-mobile/node_modules/nodejs-mobile-gyp
+          node -e "console.log(require.resolve('nodejs-mobile-gyp/package.json', {paths: [require.resolve('prebuild-for-nodejs-mobile')]}))"
 
       - name: Attempt ios-arm64 prebuild
         id: attempt
