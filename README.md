@@ -53,6 +53,23 @@ This project targets the **real, unmodified Node extension host** — not vscode
 
 `node-pty` needs a real kernel pty (`posix_openpt` / `/dev/ptmx`). iOS denies that device-node access to third-party sandboxed processes outright, the same way it denies `fork()` — this is a different sandbox rule than the extension-host one above, and the multi-process trick that routes around `fork()` does **not** unlock it (getting another *process* isn't the same as getting a real pty device). No workaround identified short of a full jailbreak. Everything else — Copilot, other bundled extensions, `argon2`, the marketplace — is intentionally left in, not trimmed for convenience; see `scripts/trim-code-server.sh`.
 
+## The strongest verification available without a device: the actual server payload really runs
+
+Everything above is either a compile check or a Simulator smoke test that can't exercise the Network Extensions. Separately, though: **the exact trimmed code-server build this project ships was actually executed**, for real, on a real Linux machine (WSL2/Ubuntu, matching the CI build's `ubuntu-22.04` target so the linux-x64 native `.node` binaries load correctly) — not on iOS, but with the identical `entry.js`, the identical `--auth none --bind-addr 127.0.0.1:PORT --disable-telemetry --disable-update-check <workspace>` arguments `PacketTunnelProvider.swift` uses, and *without* `IPADVSCODE_NO_FORK` (i.e. the normal, unpatched `cp.fork()` path — a control run, not the iOS path):
+
+```
+info  HTTP server listening on http://127.0.0.1:18486/
+info    - Authentication is disabled
+Extension host agent started.
+Started initializing default profile extensions in extensions installation folder...
+Completed initializing default profile extensions in extensions installation folder...
+```
+```
+curl -sL http://127.0.0.1:18486/  →  HTTP 200, 4037 bytes, 1 redirect, contains `data-settings` (a real VSCode workbench HTML attribute)
+```
+
+This confirms the server-side application logic itself — routing, workspace handling, extension host bring-up, HTML serving — is genuinely correct, independent of anything iOS-specific. What it does **not** confirm: the iOS-specific IPC path (`IPADVSCODE_NO_FORK` writing the launch request and `ExtensionHostRuntime` picking it up instead of a literal fork), nodejs-mobile's `node_start()` behaving the same as stock Node, or anything about the Network Extension mechanism itself — none of those exist outside iOS to test this way.
+
 ## Not done yet
 
 - Running any of this on an actual device or simulator (this pipeline has no way to do that)
