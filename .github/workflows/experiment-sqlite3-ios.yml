@@ -128,27 +128,26 @@ jobs:
         # concrete next step after three attempts at overriding this from
         # the consuming module's own binding.gyp had zero effect.
         run: |
-          echo "=== ALL copies of common.gypi anywhere on the runner ==="
-          # A prior attempt patched the one copy found under
-          # /tmp/prebuild-tool/node_modules (nodejs-mobile-react-native's
-          # bundled headers) — confirmed via grep that the patch was
-          # written correctly — but round 2's compile command still showed
-          # unpatched -fno-exceptions/-fno-rtti unchanged, even after
-          # `rm -rf build` to force a fresh configure. That means configure
-          # reads a DIFFERENT copy than the one just patched. Search
-          # everywhere, not just the one path already tried.
-          find / -iname "common.gypi" 2>/dev/null | while read -r f; do
-            echo "--- $f ---"
-            grep -n "fno-exceptions\|fno-rtti" "$f" 2>/dev/null || echo "(no exceptions/rtti mention)"
-          done
-          echo "=== node-gyp's own devdir/nodedir config, from round 1's configure output ==="
-          grep -i "devdir\|nodedir\|gyp info find" /tmp/prebuild-round1.log | head -20
-          echo "=== patch every copy found, not just one ==="
-          find / -iname "common.gypi" 2>/dev/null | while read -r f; do
+          echo "=== node-gyp's actual --nodedir for this build, from round 1's configure output ==="
+          # Confirmed by a prior attempt: it's the copy nested inside
+          # prebuild-for-nodejs-mobile's own node_modules
+          # (.../prebuild-for-nodejs-mobile/node_modules/nodejs-mobile-react-native/ios/libnode),
+          # NOT the top-level one — patching only the top-level copy (an
+          # earlier attempt) had zero effect for exactly this reason. A
+          # broader `find /` + patch-everything pass after that confirmed
+          # the right nested file gets patched correctly, but then hit a
+          # permission error on some unrelated system Node install further
+          # down the list, aborting the whole step (bash's default -e)
+          # before round 2 could run. Scope to /tmp only — that's where
+          # nodedir actually points, and it avoids read-only system paths
+          # (Xcode's bundled Node install, runner tool caches) entirely.
+          grep -i "nodedir dev files" /tmp/prebuild-round1.log | head -5
+          echo "=== patch every common.gypi under /tmp ==="
+          find /tmp -iname "common.gypi" 2>/dev/null | while read -r f; do
             if grep -q "fno-exceptions" "$f" 2>/dev/null; then
-              sed -i.bak "s/'-fno-rtti', '-fno-exceptions', /'-frtti', '-fexceptions', /" "$f"
+              sed -i.bak "s/'-fno-rtti', '-fno-exceptions', /'-frtti', '-fexceptions', /" "$f" || echo "::warning::sed failed on $f"
               echo "patched: $f"
-              grep -n "frtti\|fexceptions" "$f"
+              grep -n "frtti\|fexceptions" "$f" || true
             fi
           done
 
