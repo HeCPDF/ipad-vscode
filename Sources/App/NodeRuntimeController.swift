@@ -45,6 +45,7 @@ final class NodeRuntimeController: ObservableObject {
         guard !started else { return }
         started = true
 
+        redirectStderrToFile()
         AudioKeepAlive.shared.start()
         startNodeRuntime()
         // No IPC round trip to wait on anymore (everything is in-process) —
@@ -67,6 +68,28 @@ final class NodeRuntimeController: ObservableObject {
             accessedSecurityScopedWorkspaces.append(url)
         }
         return url.path
+    }
+
+    /// Node's own uncaught-exception handling prints to raw C stderr and
+    /// then calls `process.exit()` — which, since Node is embedded as a
+    /// library here rather than a real child process, terminates this
+    /// entire host app, not just "the Node part". That output never
+    /// reaches Xcode/CI: `simctl launch`'s `--stdout`/`--stderr` capture
+    /// flags are denied outright by this environment's `simctl`
+    /// (`FBSOpenApplicationServiceErrorDomain` / `SBMainWorkspace`,
+    /// reproduced repeatedly — a real tooling limitation, not our bug),
+    /// and unified logging (`os.Logger`) only sees log calls that go
+    /// through it, not raw stdio. Redirecting the C-level stderr/stdout
+    /// streams to a file *inside this app's own sandbox* survives the
+    /// process exiting, since it's a real file on disk — CI can pull it
+    /// out afterward via `simctl get_app_container` even though the
+    /// process that wrote it is gone.
+    private func redirectStderrToFile() {
+        let logURL = RuntimeConfig.privateStorageURL.appendingPathComponent("node-stdio.log")
+        freopen(logURL.path, "w", stdout)
+        freopen(logURL.path, "a", stderr)
+        setvbuf(stdout, nil, _IONBF, 0)
+        setvbuf(stderr, nil, _IONBF, 0)
     }
 
     /// `node_start` runs Node's event loop and does not return in normal
