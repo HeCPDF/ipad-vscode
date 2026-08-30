@@ -18,14 +18,15 @@ jobs:
         run: xcodebuild -version
 
       - name: Get @vscode/sqlite3 source
+        # The published npm package omits binding.gyp/src/deps (prebuilds
+        # only) — confirmed by a first attempt at this experiment failing
+        # with "No native module (GYP or Rust) found in this folder". The
+        # actual GitHub repo has them.
         run: |
           mkdir -p /tmp/sqlite3-src
-          cd /tmp/sqlite3-src
-          npm pack @vscode/sqlite3
-          tar -xzf vscode-sqlite3-*.tgz
-          mv package sqlite3-module
-          cat sqlite3-module/package.json | head -30
-          ls sqlite3-module
+          git clone --depth 1 --branch v5.1.14-vscode https://github.com/microsoft/vscode-node-sqlite3.git /tmp/sqlite3-src/sqlite3-module
+          ls /tmp/sqlite3-src/sqlite3-module
+          test -f /tmp/sqlite3-src/sqlite3-module/binding.gyp && echo "binding.gyp present"
 
       - name: Attempt ios-arm64 prebuild
         id: attempt
