@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: Compile + Simulator smoke test
+    name: Compile + Simulator smoke test + UI tests
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -107,3 +107,29 @@ jobs:
         with:
           name: simulator-smoke-test
           path: artifacts
+
+      # Actual UI automation (XCUITest), not just "launched and didn't
+      # crash": taps the real Open Folder button and confirms the system
+      # document picker sheet actually comes up. This is the one flow that
+      # doesn't depend on either NEPacketTunnelProvider extension, so
+      # Simulator's Network Extension gaps don't affect it.
+      - name: Run UI tests
+        run: |
+          xcodebuild test \
+            -project iPadVSCode.xcodeproj \
+            -scheme iPadVSCode \
+            -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
+            -resultBundlePath /tmp/uitest-results.xcresult \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Export UI test result bundle
+        if: always()
+        run: |
+          mkdir -p artifacts
+          [ -d /tmp/uitest-results.xcresult ] && cp -R /tmp/uitest-results.xcresult artifacts/ || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-test-results
+          path: artifacts/uitest-results.xcresult
