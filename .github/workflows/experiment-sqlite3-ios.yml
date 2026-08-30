@@ -128,8 +128,15 @@ jobs:
         # concrete next step after three attempts at overriding this from
         # the consuming module's own binding.gyp had zero effect.
         run: |
-          echo "=== locating cached common.gypi ==="
-          CACHED=$(find ~/.cache/node-gyp ~/Library/Caches/node-gyp ~/.node-gyp -iname "common.gypi" 2>/dev/null | head -1)
+          echo "=== locating common.gypi ==="
+          # NOT node-gyp's standard ~/.cache/node-gyp mechanism — confirmed
+          # by round 1's compile command -I paths: headers are bundled
+          # directly as package assets inside nodejs-mobile-react-native
+          # (a transitive dep of prebuild-for-nodejs-mobile), not fetched
+          # into a cache dir at all. A prior attempt searching the standard
+          # node-gyp cache locations found nothing (empty result) — this is
+          # why, not a sign the file doesn't exist.
+          CACHED=$(find /tmp/prebuild-tool/node_modules -iname "common.gypi" -path "*ios*" 2>/dev/null | head -1)
           echo "found: $CACHED"
           if [ -z "$CACHED" ]; then
             echo "::warning::no cached common.gypi found, cannot patch"
