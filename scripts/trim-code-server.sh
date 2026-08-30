@@ -52,9 +52,14 @@ rm -rf lib/vscode/node_modules/node-pty
 # --auth none doesn't prevent the crash on its own. Stub every entry
 # point the package's own package.json declares (covers both the CJS
 # "main" and any "exports" map, whatever this release actually ships)
-# with a Proxy that throws only when a property is actually accessed —
-# safe here since nothing calls it with --auth none, and loud instead of
-# silently wrong if that assumption is ever violated.
+# with plain no-op/rejecting stub functions — safe here since nothing
+# calls them with --auth none, and loud (a rejected Promise) instead of
+# silently wrong if that assumption is ever violated. A throwing Proxy
+# was tried first and itself crashed startup: TypeScript's __importStar
+# interop helper checks `mod.__esModule` before anything else, which hit
+# the Proxy's `get` trap immediately. A plain object sidesteps every such
+# introspection edge case (property enumeration, hasOwnProperty checks,
+# destructuring) since it behaves exactly like any real module's exports.
 for argon2_pkg in node_modules/argon2 lib/vscode/node_modules/argon2; do
   if [ -d "$argon2_pkg" ]; then
     entries=$(node -e "
@@ -70,11 +75,20 @@ for argon2_pkg in node_modules/argon2 lib/vscode/node_modules/argon2; do
     ")
     for entry in $entries; do
       cat > "$argon2_pkg/$entry" <<'STUB'
-module.exports = new Proxy({}, {
-  get() {
-    throw new Error("argon2 stub: real password hashing is unavailable on iOS (runs with --auth none only) -- see scripts/trim-code-server.sh");
-  },
-});
+function unavailable() {
+  return Promise.reject(new Error(
+    "argon2 stub: real password hashing is unavailable on iOS (runs with --auth none only) -- see scripts/trim-code-server.sh"
+  ));
+}
+module.exports = {
+  hash: unavailable,
+  verify: unavailable,
+  needsRehash: () => false,
+  argon2i: 0,
+  argon2d: 1,
+  argon2id: 2,
+  limits: {},
+};
 STUB
     done
     echo "stubbed argon2 entry points in $argon2_pkg: $entries"
