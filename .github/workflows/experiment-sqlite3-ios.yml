@@ -44,21 +44,39 @@ jobs:
           test -f binding.gyp && echo "binding.gyp present"
           grep gypfile package.json
 
+      - name: Install prebuild-for-nodejs-mobile locally, override its bundled nodejs-mobile-gyp
+        # npx installs into an isolated, ephemeral node_modules each time, so
+        # there's no way to override one of its transitive deps that way.
+        # prebuild-for-nodejs-mobile@18.17.7 resolves nodejs-mobile-gyp via
+        # `require.resolve('nodejs-mobile-gyp/bin/node-gyp.js')`, which walks
+        # up from its own location — pinned to ^0.3.1 in its package.json,
+        # and 0.3.1 is confirmed broken (hardcoded Python-2-only `print`
+        # syntax in its version-detection code, crashes regardless of which
+        # Python interpreter it's pointed at). Installing the tool for real
+        # (not via npx) and then explicitly installing nodejs-mobile-gyp@0.4.0
+        # in the same project hoists 0.4.0 to the top-level node_modules,
+        # which `require.resolve` finds first.
+        run: |
+          mkdir -p /tmp/prebuild-tool
+          cd /tmp/prebuild-tool
+          npm install prebuild-for-nodejs-mobile@18.17.7
+          npm install nodejs-mobile-gyp@0.4.0
+          npm ls nodejs-mobile-gyp || true
+          node -e "console.log(require.resolve('nodejs-mobile-gyp/package.json'))"
+
       - name: Attempt ios-arm64 prebuild
         id: attempt
         continue-on-error: true
         env:
-          # nodejs-mobile-gyp's python auto-detection tries python2 first,
-          # then falls back to a codepath with Python-2-only syntax
-          # (`print "..."`) that crashes on macOS runners with no python2 —
-          # confirmed by a prior attempt failing exactly there. Setting
-          # PYTHON/npm_config_python explicitly skips that detection dance.
+          # Belt-and-suspenders: 0.4.0 is reported to have real Python 3
+          # support, but keep forcing python3 explicitly in case some
+          # codepath still tries the old python2-first detection dance.
           PYTHON: /usr/bin/python3
           npm_config_python: /usr/bin/python3
         run: |
           cd /tmp/sqlite3-src/sqlite3-module
           npm install --ignore-scripts
-          npx --yes prebuild-for-nodejs-mobile@18.17.7 ios-arm64 --verbose 2>&1 | tee /tmp/prebuild.log
+          /tmp/prebuild-tool/node_modules/.bin/prebuild-for-nodejs-mobile ios-arm64 --verbose 2>&1 | tee /tmp/prebuild.log
 
       - name: Show result
         run: |
