@@ -156,6 +156,14 @@ jobs:
           APP_PATH=$(find "$DERIVED_DATA/Build/Products" -maxdepth 2 -name 'iPadVSCode.app' | head -1)
           echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
 
+      # `simctl launch` alone doesn't capture the process's actual
+      # stdout/stderr (unified logging via the subsystem predicate below
+      # only sees os_log/NSLog calls, not raw console output) -- and
+      # that's exactly where Node prints an uncaught exception's message
+      # before calling exit(1). --stdout/--stderr redirect the launched
+      # process's real console output to files so a startup crash is
+      # actually diagnosable from CI artifacts instead of just "app not
+      # running."
       - name: Boot Simulator, install, launch, screenshot
         run: |
           set -e
@@ -165,11 +173,15 @@ jobs:
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
           xcrun simctl install "$UDID" "${{ steps.sim_build.outputs.app_path }}"
-          xcrun simctl launch "$UDID" com.hecpdf.ipadvscode
-          sleep 8
           mkdir -p artifacts
+          xcrun simctl launch --stdout=artifacts/app-stdout.txt --stderr=artifacts/app-stderr.txt "$UDID" com.hecpdf.ipadvscode
+          sleep 8
           xcrun simctl io "$UDID" screenshot artifacts/simulator-launch.png
           xcrun simctl spawn "$UDID" log show --predicate 'subsystem CONTAINS "com.hecpdf.ipadvscode"' --last 1m > artifacts/simulator-log.txt || true
+          echo "--- app-stdout.txt ---"
+          cat artifacts/app-stdout.txt || true
+          echo "--- app-stderr.txt ---"
+          cat artifacts/app-stderr.txt || true
 
       - uses: actions/upload-artifact@v4
         if: always()
