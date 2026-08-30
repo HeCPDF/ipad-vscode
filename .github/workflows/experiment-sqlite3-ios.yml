@@ -47,6 +47,14 @@ jobs:
       - name: Attempt ios-arm64 prebuild
         id: attempt
         continue-on-error: true
+        env:
+          # nodejs-mobile-gyp's python auto-detection tries python2 first,
+          # then falls back to a codepath with Python-2-only syntax
+          # (`print "..."`) that crashes on macOS runners with no python2 —
+          # confirmed by a prior attempt failing exactly there. Setting
+          # PYTHON/npm_config_python explicitly skips that detection dance.
+          PYTHON: /usr/bin/python3
+          npm_config_python: /usr/bin/python3
         run: |
           cd /tmp/sqlite3-src/sqlite3-module
           npm install --ignore-scripts
