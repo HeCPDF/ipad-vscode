@@ -13,6 +13,7 @@ import os
 /// 127.0.0.1.
 final class PacketTunnelProvider: NEPacketTunnelProvider {
     private let log = Logger(subsystem: "com.hecpdf.ipadvscode.noderuntime", category: "tunnel")
+    private var accessedSecurityScopedWorkspace: URL?
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
         log.info("startTunnel")
@@ -37,6 +38,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         log.info("stopTunnel: \(String(describing: reason))")
+        accessedSecurityScopedWorkspace?.stopAccessingSecurityScopedResource()
+        accessedSecurityScopedWorkspace = nil
         completionHandler()
     }
 
@@ -67,11 +70,38 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let placeholderEntry = Bundle.main.path(forResource: "server", ofType: "js") ?? "server.js"
         let entryScript = FileManager.default.fileExists(atPath: bundledEntry) ? bundledEntry : placeholderEntry
 
-        let workspaceRoot = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: RuntimeConfig.appGroupIdentifier)?
-            .appendingPathComponent("workspace", isDirectory: true)
-        if let workspaceRoot {
-            try? FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        let appGroupContainer = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: RuntimeConfig.appGroupIdentifier)
+
+        // The user's chosen folder (via UIDocumentPickerViewController in the
+        // App) can live outside our sandbox entirely — Files/iCloud Drive —
+        // so it's stored as a security-scoped bookmark, not a plain path.
+        // Falls back to a folder inside our own App Group container (no
+        // bookmark needed there) if nothing has been picked yet.
+        let workspaceRoot: URL
+        let needsSecurityScope: Bool
+        if let appGroupContainer, let bookmarked = WorkspaceSelection.resolveBookmark(in: appGroupContainer) {
+            workspaceRoot = bookmarked
+            needsSecurityScope = true
+        } else if let appGroupContainer {
+            let fallback = appGroupContainer.appendingPathComponent("workspace", isDirectory: true)
+            try? FileManager.default.createDirectory(at: fallback, withIntermediateDirectories: true)
+            workspaceRoot = fallback
+            needsSecurityScope = false
+        } else {
+            log.error("no App Group container — cannot resolve a workspace root")
+            return
+        }
+
+        if needsSecurityScope {
+            guard workspaceRoot.startAccessingSecurityScopedResource() else {
+                log.error("startAccessingSecurityScopedResource failed for the picked workspace folder")
+                return
+            }
+            // node_start() blocks running the event loop for the lifetime of
+            // this process, so the matching stop call belongs in
+            // stopTunnel(), not here — see the property below.
+            accessedSecurityScopedWorkspace = workspaceRoot
         }
 
         var arguments = [
@@ -86,9 +116,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 "--disable-telemetry",
                 "--disable-update-check",
             ]
-            if let workspaceRoot {
-                arguments.append(workspaceRoot.path)
-            }
+            arguments.append(workspaceRoot.path)
         }
 
         DispatchQueue.global(qos: .userInitiated).async {
