@@ -5,13 +5,24 @@ import XCTest
 /// NEPacketTunnelProvider extension actually working — Simulator's
 /// Network Extension support gaps don't affect this test.
 final class OpenFolderFlowUITests: XCTestCase {
-    func testOpenFolderButtonPresentsPicker() {
+    /// The editor no longer gates itself behind a folder being picked (it
+    /// loads code-server's own welcome page immediately, matching real
+    /// VSCode/code-server behavior — see ContentView.swift), so there's no
+    /// on-screen "Open Folder…" button to tap anymore. The only way to
+    /// trigger it now is the menu bar command, which is exercised here via
+    /// its keyboard shortcut (Cmd+O) — a real test of the `.commands {}`
+    /// menu bar wiring in iPadVSCodeApp.swift, not just the picker.
+    func testOpenFolderShortcutPresentsPicker() {
         let app = XCUIApplication()
         app.launch()
 
-        let openFolderButton = app.buttons["Open Folder…"]
-        XCTAssertTrue(openFolderButton.waitForExistence(timeout: 10), "Open Folder button should appear on first launch")
-        openFolderButton.tap()
+        // No specific element to wait on before the shortcut fires — the
+        // WKWebView content (code-server's welcome page) isn't something
+        // XCUITest can see into, and the extensions serving it don't
+        // activate in Simulator anyway (see README.md). A fixed settle
+        // delay is the pragmatic choice here.
+        Thread.sleep(forTimeInterval: 3)
+        app.typeKey("o", modifierFlags: .command)
 
         // Give the system sheet time to animate in before inspecting.
         Thread.sleep(forTimeInterval: 2)

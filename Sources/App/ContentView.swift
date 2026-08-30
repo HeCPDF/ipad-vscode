@@ -2,40 +2,36 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
 
+/// Never gates the editor itself behind a folder being picked first —
+/// code-server (like real VSCode/vscode-web) has its own "Editor Evolved"
+/// welcome page and lets you edit untitled files with no folder open at
+/// all. This view just loads the editor unconditionally once the Node
+/// runtime is up; "Open Folder…" (menu bar or in-editor) authorizes a
+/// folder at runtime and navigates to `?folder=<path>` — it doesn't gate
+/// startup. See PacketTunnelProvider.swift's handleAppMessage and
+/// code-server's src/node/routes/vscode.ts (`req.query.folder`).
 struct ContentView: View {
     @EnvironmentObject private var menuBridge: MenuBridge
     @StateObject private var tunnel = TunnelController.shared
     @State private var webView = WKWebView()
     @State private var isPickingFolder = false
-    @State private var hasWorkspace = WorkspaceSelection.resolveBookmark(
-        in: FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: RuntimeConfig.appGroupIdentifier) ?? URL(fileURLWithPath: "/")
-    ) != nil
+    @State private var folderPickerError: String?
 
     var body: some View {
         ZStack {
-            if hasWorkspace {
-                EditorWebView(webView: webView)
-                    .ignoresSafeArea()
+            EditorWebView(webView: webView)
+                .ignoresSafeArea()
 
-                if !tunnel.isRunning {
-                    startingOverlay
-                }
-            } else {
-                openFolderPrompt
+            if !tunnel.isRunning {
+                startingOverlay
             }
         }
         .sheet(isPresented: $isPickingFolder) {
             FolderPicker { url in
-                guard let containerURL = FileManager.default
-                    .containerURL(forSecurityApplicationGroupIdentifier: RuntimeConfig.appGroupIdentifier)
-                else { return }
-                if WorkspaceSelection.store(url: url, in: containerURL) {
-                    hasWorkspace = true
-                }
+                Task { await openFolder(url) }
             }
         }
-        .task(id: hasWorkspace) {
-            guard hasWorkspace else { return }
+        .task {
             await tunnel.start()
             if tunnel.isRunning {
                 webView.load(URLRequest(url: RuntimeConfig.loopbackURL))
@@ -47,6 +43,48 @@ struct ContentView: View {
             menuBridge.openFolderRequested = false
         }
         .onAppear(perform: applyMinimumWindowSize)
+        .alert(
+            "Couldn't open folder",
+            isPresented: Binding(
+                get: { folderPickerError != nil },
+                set: { if !$0 { folderPickerError = nil } }
+            ),
+            presenting: folderPickerError
+        ) { _ in
+            Button("OK") { folderPickerError = nil }
+        } message: { message in
+            Text(message)
+        }
+    }
+
+    private func openFolder(_ url: URL) async {
+        do {
+            let resolvedPath = try await tunnel.authorizeWorkspace(url)
+            var components = URLComponents(url: RuntimeConfig.loopbackURL, resolvingAgainstBaseURL: false)
+            components?.queryItems = [URLQueryItem(name: "folder", value: resolvedPath)]
+            guard let folderURL = components?.url else { return }
+            webView.load(URLRequest(url: folderURL))
+        } catch {
+            folderPickerError = "\(error)"
+        }
+    }
+
+    private var startingOverlay: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text("Starting Node runtime…")
+                .foregroundStyle(.secondary)
+            if let error = tunnel.lastError {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+        }
+        .padding()
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     /// iPadOS 26's windows are freely resizable by default (UIRequiresFullScreen
@@ -70,43 +108,12 @@ struct ContentView: View {
         else { return }
         scene.sizeRestrictions?.minimumSize = CGSize(width: 500, height: 400)
     }
-
-    private var startingOverlay: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-            Text("Starting Node runtime…")
-                .foregroundStyle(.secondary)
-            if let error = tunnel.lastError {
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-            }
-        }
-        .padding()
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-
-    private var openFolderPrompt: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "folder.badge.plus")
-                .font(.system(size: 48))
-                .foregroundStyle(.secondary)
-            Text("Open a folder to start editing")
-                .font(.title3)
-            Button("Open Folder…") {
-                isPickingFolder = true
-            }
-            .buttonStyle(.borderedProminent)
-        }
-    }
 }
 
 /// Wraps UIDocumentPickerViewController in folder-picking mode. The
-/// returned URL is security-scoped — WorkspaceSelection.store() bookmarks
-/// it for NodeRuntimeExtension to resolve and access later.
+/// returned URL is security-scoped — passed to
+/// TunnelController.authorizeWorkspace(), which bookmarks it and has
+/// NodeRuntimeExtension authorize access in its own process.
 private struct FolderPicker: UIViewControllerRepresentable {
     let onPick: (URL) -> Void
 

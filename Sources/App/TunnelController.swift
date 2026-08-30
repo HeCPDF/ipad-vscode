@@ -74,6 +74,24 @@ final class TunnelController: ObservableObject {
         }
     }
 
+    /// Sends a picked folder's security-scoped bookmark to NodeRuntimeExtension
+    /// and returns the resolved absolute path once that process has
+    /// authorized access to it (see `handleAppMessage` in
+    /// PacketTunnelProvider.swift) — the path to put in code-server's
+    /// `?folder=` query parameter.
+    func authorizeWorkspace(_ url: URL) async throws -> String {
+        let bookmarkData = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        let requestData = try JSONEncoder().encode(WorkspaceAuthorizationRequest(bookmarkData: bookmarkData))
+        guard let responseData = try await sendMessage(requestData) else {
+            throw TunnelError.workspaceAuthorizationFailed("no response from NodeRuntimeExtension")
+        }
+        let response = try JSONDecoder().decode(WorkspaceAuthorizationResponse.self, from: responseData)
+        if let path = response.resolvedPath {
+            return path
+        }
+        throw TunnelError.workspaceAuthorizationFailed(response.errorDescription ?? "unknown error")
+    }
+
     /// Starts ExtensionHostRuntime. Called when the file watcher below sees
     /// NodeRuntimeExtension has written a fresh ExtensionHostLaunchRequest
     /// into the shared container and the exthost process needs to be
@@ -184,4 +202,5 @@ final class TunnelController: ObservableObject {
 
 enum TunnelError: Error {
     case notConnected
+    case workspaceAuthorizationFailed(String)
 }

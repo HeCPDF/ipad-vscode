@@ -44,10 +44,45 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     /// IPC entry point for `NETunnelProviderSession.sendProviderMessage`.
+    /// Handles a newly-picked workspace folder: resolves its bookmark,
+    /// authorizes access *in this process* (a security scope started in the
+    /// app doesn't extend to us — this is a separate sandboxed process), and
+    /// returns the resolved path for the app to navigate the WKWebView to
+    /// (`?folder=<path>`). Any request that doesn't decode as
+    /// WorkspaceAuthorizationRequest is echoed back unchanged, preserving
+    /// room for future message types (LSP/DAP bridge, health checks, etc.).
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
-        // Placeholder echo until the real request routing to the Node
-        // runtime (LSP/DAP bridge, health checks, etc.) is wired up.
-        completionHandler?(messageData)
+        guard let request = try? JSONDecoder().decode(WorkspaceAuthorizationRequest.self, from: messageData) else {
+            completionHandler?(messageData)
+            return
+        }
+
+        var isStale = false
+        guard let url = try? URL(
+            resolvingBookmarkData: request.bookmarkData,
+            options: [],
+            relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+        ) else {
+            respond(.init(resolvedPath: nil, errorDescription: "failed to resolve bookmark"), to: completionHandler)
+            return
+        }
+
+        guard url.startAccessingSecurityScopedResource() else {
+            respond(.init(resolvedPath: nil, errorDescription: "startAccessingSecurityScopedResource failed"), to: completionHandler)
+            return
+        }
+
+        // Only one workspace is open at a time in this design — release the
+        // previous one before taking the new one.
+        accessedSecurityScopedWorkspace?.stopAccessingSecurityScopedResource()
+        accessedSecurityScopedWorkspace = url
+
+        respond(.init(resolvedPath: url.path, errorDescription: nil), to: completionHandler)
+    }
+
+    private func respond(_ response: WorkspaceAuthorizationResponse, to completionHandler: ((Data?) -> Void)?) {
+        completionHandler?(try? JSONEncoder().encode(response))
     }
 
     /// `node_start` runs Node's event loop and does not return in normal
@@ -62,6 +97,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// tunnel's network settings are loopback-only, nothing forwards the
     /// port externally), so there is no one to authenticate against.
     ///
+    /// No workspace path is passed on the command line — code-server starts
+    /// with no folder open (its own "Editor Evolved" welcome page, matching
+    /// real VSCode/code-server behavior) or reopens whatever it last had
+    /// open via its own settings, exactly like the desktop app. Opening a
+    /// *new* folder from this app happens later via `handleAppMessage`
+    /// above plus the app navigating the WKWebView to `?folder=<path>` —
+    /// this app never gates the editor itself behind a folder being picked
+    /// first, matching real VSCode.
+    ///
+    /// If a workspace bookmark already exists (a folder picked in a
+    /// previous session), it's still resolved and authorized here at
+    /// startup — not to pass on the command line, but so the security scope
+    /// is already active in case code-server's own last-opened-folder
+    /// mechanism tries to reopen it.
+    ///
     /// Not yet verified at runtime (no device/simulator in this pipeline) —
     /// this is the entry point the real server SHOULD be started with per
     /// `src/node/cli.ts`, not something that has been observed to boot.
@@ -70,38 +120,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let placeholderEntry = Bundle.main.path(forResource: "server", ofType: "js") ?? "server.js"
         let entryScript = FileManager.default.fileExists(atPath: bundledEntry) ? bundledEntry : placeholderEntry
 
-        let appGroupContainer = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: RuntimeConfig.appGroupIdentifier)
-
-        // The user's chosen folder (via UIDocumentPickerViewController in the
-        // App) can live outside our sandbox entirely — Files/iCloud Drive —
-        // so it's stored as a security-scoped bookmark, not a plain path.
-        // Falls back to a folder inside our own App Group container (no
-        // bookmark needed there) if nothing has been picked yet.
-        let workspaceRoot: URL
-        let needsSecurityScope: Bool
-        if let appGroupContainer, let bookmarked = WorkspaceSelection.resolveBookmark(in: appGroupContainer) {
-            workspaceRoot = bookmarked
-            needsSecurityScope = true
-        } else if let appGroupContainer {
-            let fallback = appGroupContainer.appendingPathComponent("workspace", isDirectory: true)
-            try? FileManager.default.createDirectory(at: fallback, withIntermediateDirectories: true)
-            workspaceRoot = fallback
-            needsSecurityScope = false
-        } else {
-            log.error("no App Group container — cannot resolve a workspace root")
-            return
-        }
-
-        if needsSecurityScope {
-            guard workspaceRoot.startAccessingSecurityScopedResource() else {
-                log.error("startAccessingSecurityScopedResource failed for the picked workspace folder")
-                return
+        if let appGroupContainer = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: RuntimeConfig.appGroupIdentifier),
+            let bookmarked = WorkspaceSelection.resolveBookmark(in: appGroupContainer)
+        {
+            if bookmarked.startAccessingSecurityScopedResource() {
+                accessedSecurityScopedWorkspace = bookmarked
+            } else {
+                log.error("startAccessingSecurityScopedResource failed for the previously-picked workspace folder")
             }
-            // node_start() blocks running the event loop for the lifetime of
-            // this process, so the matching stop call belongs in
-            // stopTunnel(), not here — see the property below.
-            accessedSecurityScopedWorkspace = workspaceRoot
         }
 
         var arguments = [
@@ -116,7 +143,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 "--disable-telemetry",
                 "--disable-update-check",
             ]
-            arguments.append(workspaceRoot.path)
         }
 
         DispatchQueue.global(qos: .userInitiated).async {
