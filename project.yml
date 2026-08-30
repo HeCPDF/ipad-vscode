@@ -103,7 +103,7 @@ targets:
           - packet-tunnel-provider
     dependencies:
       - framework: Frameworks/NodeMobile.xcframework
-        embed: false
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hecpdf.ipadvscode.noderuntime
@@ -141,7 +141,7 @@ targets:
           - packet-tunnel-provider
     dependencies:
       - framework: Frameworks/NodeMobile.xcframework
-        embed: false
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hecpdf.ipadvscode.exthost

@@ -57,36 +57,58 @@ jobs:
         run: xcodegen generate
 
       - name: Build (no code signing, generic device)
-        id: device_build
         run: |
-          DERIVED_DATA=/tmp/derived-device
           xcodebuild build \
             -project iPadVSCode.xcodeproj \
             -scheme iPadVSCode \
             -destination 'generic/platform=iOS' \
-            -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM=""
-          APP_PATH=$(find "$DERIVED_DATA/Build/Products" -maxdepth 2 -name 'iPadVSCode.app' | head -1)
-          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
 
-      # Unsigned IPA for real-device testing: no Apple Developer account or
-      # signing certificate is available in this pipeline, so this can't be
-      # installed as-is — it's meant to be re-signed with the user's own
-      # certificate/provisioning profile (Sideloadly, AltStore/SideStore,
-      # or a manual `codesign`/zsign pass) before installing on a real
-      # iPad. An IPA is just a zip of Payload/<App>.app — no special
-      # tooling needed to produce one.
+      # `xcodebuild build` for a generic (non-archive) destination does not
+      # reliably run the same resource-copy/embed-binary phases a real
+      # distributable product needs — confirmed by a prior IPA produced
+      # this way being ~375KB with no code-server payload or NodeMobile
+      # framework binaries inside the .appex bundles at all. `archive` is
+      # the actual product-export code path and does run them fully; it
+      # still works unsigned with CODE_SIGNING_ALLOWED=NO. No Apple
+      # Developer account or signing certificate is available in this
+      # pipeline either way, so the result can't be installed as-is — it's
+      # meant to be re-signed with the user's own certificate/provisioning
+      # profile (Sideloadly, AltStore/SideStore, or a manual
+      # `codesign`/zsign pass) before installing on a real iPad.
+      - name: Archive (unsigned) for a real, complete .app product
+        id: archive
+        run: |
+          xcodebuild archive \
+            -project iPadVSCode.xcodeproj \
+            -scheme iPadVSCode \
+            -destination 'generic/platform=iOS' \
+            -archivePath /tmp/iPadVSCode.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            SKIP_INSTALL=NO \
+            BUILD_LIBRARY_FOR_DISTRIBUTION=NO
+          APP_PATH=/tmp/iPadVSCode.xcarchive/Products/Applications/iPadVSCode.app
+          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
+          du -sh "$APP_PATH"
+          find "$APP_PATH/PlugIns" -maxdepth 1
+
+      # An IPA is just a zip of Payload/<App>.app — no special tooling
+      # needed to produce one from the archived .app.
       - name: Package unsigned IPA
         run: |
           mkdir -p ipa/Payload
-          cp -R "${{ steps.device_build.outputs.app_path }}" ipa/Payload/
+          cp -R "${{ steps.archive.outputs.app_path }}" ipa/Payload/
           cd ipa
           zip -r -y ../iPadVSCode-unsigned.ipa Payload
           cd ..
           ls -la iPadVSCode-unsigned.ipa
+          unzip -l iPadVSCode-unsigned.ipa | tail -30
 
       - uses: actions/upload-artifact@v4
         with:
