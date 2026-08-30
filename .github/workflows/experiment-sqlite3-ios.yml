@@ -21,12 +21,28 @@ jobs:
         # The published npm package omits binding.gyp/src/deps (prebuilds
         # only) — confirmed by a first attempt at this experiment failing
         # with "No native module (GYP or Rust) found in this folder". The
-        # actual GitHub repo has them.
+        # actual GitHub repo has them, but prebuild-for-nodejs-mobile's
+        # detector (isGypNodeAddon in bin.js) additionally requires
+        # package.json to have `gypfile: true` or a `scripts.install`/
+        # `scripts.rebuild` — this package uses node-pre-gyp's `binary`
+        # field convention instead, which the detector doesn't recognize
+        # even though binding.gyp is genuinely present and valid. Patching
+        # gypfile:true into our local build copy (not upstream) satisfies
+        # the detector without changing how the module actually builds.
         run: |
           mkdir -p /tmp/sqlite3-src
           git clone --depth 1 --branch v5.1.14-vscode https://github.com/microsoft/vscode-node-sqlite3.git /tmp/sqlite3-src/sqlite3-module
-          ls /tmp/sqlite3-src/sqlite3-module
-          test -f /tmp/sqlite3-src/sqlite3-module/binding.gyp && echo "binding.gyp present"
+          cd /tmp/sqlite3-src/sqlite3-module
+          python3 -c "
+          import json
+          with open('package.json') as f:
+              pkg = json.load(f)
+          pkg['gypfile'] = True
+          with open('package.json', 'w') as f:
+              json.dump(pkg, f, indent=2)
+          "
+          test -f binding.gyp && echo "binding.gyp present"
+          grep gypfile package.json
 
       - name: Attempt ios-arm64 prebuild
         id: attempt
