@@ -1,15 +1,6 @@
 import SwiftUI
 import WebKit
 
-/// Loopback port the Node runtime extension's local HTTP server binds to.
-/// Kept in one place because both the extension and this view need it.
-enum RuntimeConfig {
-    static let loopbackPort = 8482
-    static var loopbackURL: URL {
-        URL(string: "http://127.0.0.1:\(loopbackPort)/")!
-    }
-}
-
 struct ContentView: View {
     @StateObject private var tunnel = TunnelController.shared
     @State private var webView = WKWebView()

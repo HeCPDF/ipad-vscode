@@ -11,11 +11,6 @@ import os
 /// "tunnel" that never routes real traffic, and use the process purely as a
 /// host for the embedded Node runtime that serves the editor UI over
 /// 127.0.0.1.
-///
-/// NOTE: the actual Node runtime bring-up (NodeMobile.xcframework) is wired
-/// in a follow-up pass, once the framework's real header/API surface has
-/// been inspected — see TODO below. This first pass focuses on getting the
-/// extension's plumbing (network settings, lifecycle, IPC) to compile.
 final class PacketTunnelProvider: NEPacketTunnelProvider {
     private let log = Logger(subsystem: "com.hecpdf.ipadvscode.noderuntime", category: "tunnel")
 
@@ -53,14 +48,46 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     /// `node_start` runs Node's event loop and does not return in normal
-    /// operation, so it must never be called on the main thread. The entry
-    /// script is a placeholder — code-server's actual bundled server entry
-    /// point gets baked in as an extension resource in a later pass; until
-    /// then this will fail at runtime with a "module not found" from Node,
-    /// which is expected and does not affect compilation.
+    /// operation, so it must never be called on the main thread.
+    ///
+    /// This launches code-server's real entry point (trimmed of native
+    /// modules that can't load on iOS — see scripts/trim-code-server.sh)
+    /// rather than the toy placeholder server. `--auth none` is safe only
+    /// because this process is unreachable from outside the device: the
+    /// tunnel's network settings are loopback-only and nothing forwards the
+    /// port externally.
+    ///
+    /// Not yet verified at runtime (no device/simulator in this pipeline) —
+    /// this is the entry point the real server SHOULD be started with per
+    /// `src/node/cli.ts`, not something that has been observed to boot.
     private func startNodeRuntime() {
-        let entryScript = Bundle.main.path(forResource: "server", ofType: "js") ?? "server.js"
-        let arguments = ["node", "--max-old-space-size=256", entryScript]
+        let bundledEntry = Bundle.main.bundlePath + "/code-server/out/node/entry.js"
+        let placeholderEntry = Bundle.main.path(forResource: "server", ofType: "js") ?? "server.js"
+        let entryScript = FileManager.default.fileExists(atPath: bundledEntry) ? bundledEntry : placeholderEntry
+
+        let workspaceRoot = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: RuntimeConfig.appGroupIdentifier)?
+            .appendingPathComponent("workspace", isDirectory: true)
+        if let workspaceRoot {
+            try? FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        }
+
+        var arguments = [
+            "node",
+            "--max-old-space-size=256",
+            entryScript,
+        ]
+        if entryScript == bundledEntry {
+            arguments += [
+                "--auth", "none",
+                "--bind-addr", "127.0.0.1:\(RuntimeConfig.loopbackPort)",
+                "--disable-telemetry",
+                "--disable-update-check",
+            ]
+            if let workspaceRoot {
+                arguments.append(workspaceRoot.path)
+            }
+        }
 
         DispatchQueue.global(qos: .userInitiated).async {
             var cArgs = arguments.map { strdup($0) }

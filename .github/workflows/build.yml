@@ -34,6 +34,23 @@ jobs:
           mkdir -p Frameworks
           cp -R /tmp/nodejs-mobile-ios/NodeMobile.xcframework Frameworks/
 
+      - name: Fetch and trim code-server build from the code-server fork
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          run_id=$(gh run list --repo HeCPDF/code-server --workflow Build --status success --branch main -L 1 --json databaseId -q '.[0].databaseId')
+          if [ -z "$run_id" ]; then
+            echo "::error::no successful code-server Build run found"
+            exit 1
+          fi
+          echo "using code-server run $run_id"
+          gh run download "$run_id" --repo HeCPDF/code-server --name linux-x64-package --dir /tmp/code-server-pkg
+          mkdir -p /tmp/code-server-release
+          tar -xzf /tmp/code-server-pkg/package.tar.gz -C /tmp/code-server-release
+          bash scripts/trim-code-server.sh /tmp/code-server-release/release
+          mkdir -p Sources/NodeRuntimeExtension/Resources/code-server
+          cp -R /tmp/code-server-release/release/. Sources/NodeRuntimeExtension/Resources/code-server/
+
       - name: Generate Xcode project
         run: xcodegen generate
 

@@ -20,6 +20,7 @@ targets:
     platform: iOS
     sources:
       - path: Sources/App
+      - path: Sources/Shared
     resources:
       - path: Resources
     info:
@@ -54,8 +55,16 @@ targets:
       - path: Sources/NodeRuntimeExtension
         excludes:
           - "Resources/**"
+      - path: Sources/Shared
     resources:
-      - path: Sources/NodeRuntimeExtension/Resources
+      - path: Sources/NodeRuntimeExtension/Resources/server.js
+      # Folder reference (not a group): code-server's build output is tens of
+      # thousands of files, and Xcode's per-file "Copy Bundle Resources"
+      # phase would be prohibitively slow / prone to CI timeouts at that
+      # count. A folder reference copies the directory as one unit instead.
+      - path: Sources/NodeRuntimeExtension/Resources/code-server
+        type: folder
+        optional: true
     info:
       path: Sources/NodeRuntimeExtension/Info.plist
       properties:

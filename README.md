@@ -22,10 +22,15 @@ Early skeleton. Current milestone is **"compiles via CI"**, tracked in `.github/
 
 ## Status detail
 
-`NodeMobile.xcframework` is linked and `node_start()` is called for real (confirmed API: a single C function, `int node_start(int argc, char *argv[])` — no Objective-C wrapper class). It currently runs a placeholder `server.js` that binds a bare `http` server on `127.0.0.1:8482`, not code-server yet.
+`NodeMobile.xcframework` is linked and `node_start()` is called for real (confirmed API: a single C function, `int node_start(int argc, char *argv[])` — no Objective-C wrapper class).
+
+CI now fetches the real code-server build, strips it with `scripts/trim-code-server.sh` (removes native `.node` modules that can't load on iOS regardless of CPU arch — different Mach-O platform tag and Node ABI than nodejs-mobile's libnode — and drops extensions like Copilot that bundle their own), and bundles the result as a folder reference into the extension. `PacketTunnelProvider` launches `code-server/out/node/entry.js --auth none --bind-addr 127.0.0.1:8482 <workspace>` if that bundle is present, falling back to the placeholder `server.js` otherwise.
+
+**This has not run on a device or simulator** — there's no signed build and no test harness in this pipeline, so "should boot per `src/node/cli.ts`" is as far as verification goes right now. A confirmed architectural blocker independent of all this: code-server's Node extension host is spawned via `child_process.fork` (`vscode/src/vs/server/node/extensionHostConnection.ts`), and iOS sandboxes third-party processes out of `fork`/`posix_spawn` entirely — this has nothing to do with JIT or signing and can't be worked around the way those can. The planned fix is to only preset extensions with a web-worker build (the same mechanism vscode.dev/github.dev use) so the client never opens the connection that would trigger `cp.fork` in the first place — not yet implemented.
 
 ## Not done yet
 
-- Replacing the placeholder `server.js` with code-server's actual server entry point (Express app, extension host, `node-pty` removed/replaced, file system provider bridged to iOS Files/iCloud)
+- Forcing/verifying the web-worker extension host path so `cp.fork` is never reached (see blocker above) — this determines which extensions are even eligible for the "limited preset extensions" list
 - File System Provider bridging iOS Files/iCloud into the editor
-- `product.json` changes to bake in a fixed set of built-in extensions and drop the marketplace UI
+- `product.json` changes to bake in the fixed set of built-in extensions and drop the marketplace UI
+- A real iOS cross-compile (or JS-side fallback) for `@vscode/sqlite3` (workspace/state storage) — currently stripped with no replacement, so storage-dependent features will not work at runtime as-is
