@@ -50,12 +50,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// `node_start` runs Node's event loop and does not return in normal
     /// operation, so it must never be called on the main thread.
     ///
-    /// This launches code-server's real entry point (trimmed of native
-    /// modules that can't load on iOS — see scripts/trim-code-server.sh)
-    /// rather than the toy placeholder server. `--auth none` is safe only
-    /// because this process is unreachable from outside the device: the
-    /// tunnel's network settings are loopback-only and nothing forwards the
-    /// port externally.
+    /// This launches code-server's real, unmodified entry point (the only
+    /// thing scripts/trim-code-server.sh removes is node-pty, which needs a
+    /// real kernel pty that iOS denies outright — see that script for why
+    /// this is a hard wall, not a convenience cut) rather than the toy
+    /// placeholder server. `--auth none` is a local default, not a feature
+    /// removal: this process is unreachable from outside the device (the
+    /// tunnel's network settings are loopback-only, nothing forwards the
+    /// port externally), so there is no one to authenticate against.
     ///
     /// Not yet verified at runtime (no device/simulator in this pipeline) —
     /// this is the entry point the real server SHOULD be started with per

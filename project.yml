@@ -42,6 +42,8 @@ targets:
     dependencies:
       - target: NodeRuntimeExtension
         embed: true
+      - target: ExtensionHostRuntime
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hecpdf.ipadvscode
@@ -84,5 +86,43 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hecpdf.ipadvscode.noderuntime
+        SKIP_INSTALL: YES
+        FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/Frameworks"
+
+  # Second packet-tunnel-provider extension, launched by iPadVSCode alongside
+  # NodeRuntimeExtension purely so the real VSCode extension host (unmodified
+  # Node exthost, not the browser/web-worker one) has a process to run in.
+  # cp.fork() (vscode/src/vs/server/node/extensionHostConnection.ts) can't
+  # spawn it directly — iOS denies fork()/posix_spawn() to third-party
+  # processes outright — so the system launches this as an independent
+  # process instead, and it connects to the same Unix-domain-socket-backed
+  # named pipe (TMPDIR pointed at the shared App Group container) that
+  # bootstrap-fork.js would have connected to if it really had been forked.
+  # See extensionHostConnection.ts patch notes in README.md.
+  ExtensionHostRuntime:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Sources/ExtensionHostRuntime
+      - path: Sources/Shared
+    info:
+      path: Sources/ExtensionHostRuntime/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ExtensionHostTunnelProvider
+    entitlements:
+      path: Sources/ExtensionHostRuntime/ExtensionHostRuntime.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.hecpdf.ipadvscode
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+    dependencies:
+      - framework: Frameworks/NodeMobile.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hecpdf.ipadvscode.exthost
         SKIP_INSTALL: YES
         FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/Frameworks"

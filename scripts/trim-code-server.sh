@@ -20,24 +20,24 @@ set -euo pipefail
 RELEASE_DIR="${1:?usage: trim-code-server.sh <release-dir>}"
 cd "$RELEASE_DIR"
 
-# Extensions we don't bundle (bring their own incompatible native modules).
-rm -rf lib/vscode/extensions/copilot
-rm -f  lib/vscode/extensions/microsoft-authentication/dist/msal-node-runtime.node
-rm -f  lib/vscode/extensions/ms-vscode.js-debug/src/win32-app-container-tokens*.node
-rm -rf lib/vscode/node_modules/@github
-
-# Core native modules with no iOS-compatible build (yet).
-rm -rf lib/vscode/node_modules/kerberos
+# Everything below this line is a genuine iOS sandbox hard-wall, not a
+# convenience cut. Nothing else gets removed: Copilot, MSAL, JS-Debug's
+# win32 binaries, kerberos, argon2, --auth, sqlite3/parcel-watcher/spdlog
+# native bindings all stay — they either work as-is (pure JS, or a native
+# module that's a real cross-compile TODO, not a removal) or are simply
+# unused on this platform without needing to be deleted.
+#
+# node-pty needs a real kernel pty (posix_openpt / /dev/ptmx). Sideloaded,
+# non-jailbroken iOS denies that device-node access at the sandbox-profile
+# level, same as it denies fork()/posix_spawn() for arbitrary children —
+# this is unrelated to JIT, signing, or the multi-extension-process IPC
+# trick used to route around cp.fork() for the extension host (see
+# vscode/src/vs/server/node/extensionHostConnection.ts and the
+# ExtensionHostRuntime target). That trick gets you another *process*;
+# it does not get you a real pty device. There is no known workaround for
+# this specific one short of a full jailbreak, which is out of scope.
 rm -rf lib/vscode/node_modules/node-pty
-rm -rf lib/vscode/node_modules/@vscode/native-watchdog
-rm -rf lib/vscode/node_modules/@vscode/deviceid
-rm -f  lib/vscode/node_modules/@parcel/watcher/build/Release/watcher.node
-rm -f  lib/vscode/node_modules/@vscode/spdlog/build/Release/spdlog.node
-rm -f  lib/vscode/node_modules/@vscode/sqlite3/build/Release/vscode-sqlite3.node
 
-# code-server's own auth hashing — unused with --auth none.
-rm -rf node_modules/argon2
-
-echo "trim complete. remaining .node files (should be empty):"
+echo "trim complete (node-pty only). remaining .node files (kept, for future cross-compile):"
 find . -name "*.node"
 echo "size: $(du -sh . | cut -f1)"
