@@ -104,7 +104,42 @@ jobs:
           cd /tmp/prebuild-tool
           grep '"version"' node_modules/prebuild-for-nodejs-mobile/node_modules/nodejs-mobile-gyp/package.json
 
-      - name: Attempt ios-arm64 prebuild
+      - name: Attempt ios-arm64 prebuild (round 1, to populate the node-gyp headers cache)
+        id: attempt1
+        continue-on-error: true
+        env:
+          PYTHON: /usr/bin/python3
+          npm_config_python: /usr/bin/python3
+        run: |
+          cd /tmp/sqlite3-src/sqlite3-module
+          npm install --ignore-scripts
+          /tmp/prebuild-tool/node_modules/.bin/prebuild-for-nodejs-mobile ios-arm64 --verbose 2>&1 | tee /tmp/prebuild-round1.log
+
+      - name: Patch the cached common.gypi to allow exceptions/RTTI, then rebuild
+        # The real source of -fno-exceptions (confirmed by grepping
+        # nodejs-mobile's own bundled Node headers, which ship this exact
+        # line): node-gyp's standard common.gypi mechanism applies
+        # target_defaults.cflags_cc to EVERY native addon unconditionally —
+        # this isn't vscode-sqlite3's binding.gyp or nodejs-mobile-gyp's
+        # addon.gypi (checked both, neither mentions exceptions/rtti at
+        # all), it's nodejs-mobile's own common.gypi, cached locally by
+        # node-gyp after round 1 downloads the Node headers. Patching the
+        # cached copy and rebuilding (without re-downloading) is the
+        # concrete next step after three attempts at overriding this from
+        # the consuming module's own binding.gyp had zero effect.
+        run: |
+          echo "=== locating cached common.gypi ==="
+          CACHED=$(find ~/.cache/node-gyp ~/Library/Caches/node-gyp ~/.node-gyp -iname "common.gypi" 2>/dev/null | head -1)
+          echo "found: $CACHED"
+          if [ -z "$CACHED" ]; then
+            echo "::warning::no cached common.gypi found, cannot patch"
+            exit 0
+          fi
+          grep -n "fno-exceptions\|fno-rtti" "$CACHED"
+          sed -i.bak "s/'-fno-rtti', '-fno-exceptions', /'-frtti', '-fexceptions', /" "$CACHED"
+          grep -n "frtti\|fexceptions\|fno-exceptions\|fno-rtti" "$CACHED"
+
+      - name: Attempt ios-arm64 prebuild (round 2, after patching common.gypi)
         id: attempt
         continue-on-error: true
         env:
@@ -115,27 +150,8 @@ jobs:
           npm_config_python: /usr/bin/python3
         run: |
           cd /tmp/sqlite3-src/sqlite3-module
-          npm install --ignore-scripts
+          rm -rf build
           /tmp/prebuild-tool/node_modules/.bin/prebuild-for-nodejs-mobile ios-arm64 --verbose 2>&1 | tee /tmp/prebuild.log
-
-      - name: Debug session (tmate)
-        # Standard, widely-used GitHub Action for exactly this: an SSH
-        # session into the live runner, in the same state the failed build
-        # left it in. No custom tunneling infra needed — tmate handles NAT
-        # traversal via its own relay. Used here to inspect
-        # nodejs-mobile-gyp's own addon.gypi/common.gypi template directly
-        # (three attempts at fixing the -fno-exceptions issue from the
-        # module's own binding.gyp all had zero effect on the generated
-        # Makefile — confirmed the flag list is synthesized entirely by
-        # nodejs-mobile-gyp's own iOS toolchain config, not our module's
-        # gyp file, so the fix has to land there instead).
-        # limit-access-to-actor would restrict SSH to keys registered on
-        # the triggering GitHub account, which locks out the agent driving
-        # this (no matching key) — left open instead. Bounded exposure:
-        # this job references no repo secrets, the runner is a throwaway
-        # ephemeral VM, and the window is capped at 15 minutes.
-        uses: mxschmitt/action-tmate@v3
-        timeout-minutes: 15
 
       - name: Show result
         run: |
