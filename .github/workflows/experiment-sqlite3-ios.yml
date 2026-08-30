@@ -1,0 +1,47 @@
+name: Experiment - cross-compile @vscode/sqlite3 for iOS
+
+# Standalone, non-blocking experiment: can prebuild-for-nodejs-mobile
+# (https://github.com/staltz/prebuild-for-nodejs-mobile) actually produce an
+# ios-arm64 build of @vscode/sqlite3 against our nodejs-mobile fork's Node
+# 18.20.x runtime? This does not feed into the main app build yet — it's
+# purely to find out whether this path is viable before committing to
+# wiring it in. See README.md "Not done yet".
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  try-prebuild:
+    runs-on: macos-15
+    steps:
+      - name: Xcode version
+        run: xcodebuild -version
+
+      - name: Get @vscode/sqlite3 source
+        run: |
+          mkdir -p /tmp/sqlite3-src
+          cd /tmp/sqlite3-src
+          npm pack @vscode/sqlite3
+          tar -xzf vscode-sqlite3-*.tgz
+          mv package sqlite3-module
+          cat sqlite3-module/package.json | head -30
+          ls sqlite3-module
+
+      - name: Attempt ios-arm64 prebuild
+        id: attempt
+        continue-on-error: true
+        run: |
+          cd /tmp/sqlite3-src/sqlite3-module
+          npm install --ignore-scripts
+          npx --yes prebuild-for-nodejs-mobile@18.17.7 ios-arm64 --verbose 2>&1 | tee /tmp/prebuild.log
+
+      - name: Show result
+        run: |
+          echo "attempt outcome: ${{ steps.attempt.outcome }}"
+          find /tmp/sqlite3-src/sqlite3-module -iname "*.node" -o -iname "*ios*" 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sqlite3-ios-experiment-log
+          path: /tmp/prebuild.log
