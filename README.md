@@ -14,7 +14,12 @@ This is a **sideload-only** project: it deliberately uses a network-extension en
 
 ## Status
 
-Everything below **compiles via CI** (`.github/workflows/build.yml`: unsigned build against `generic/platform=iOS`, no Apple Developer account needed — see `.github/workflows/build.yml` runs for the current pass/fail state). That's the milestone this project is tracking, not "verified working" — **nothing here has run on a device or simulator**. There's no signed build and no test harness in this pipeline, so correctness is established by: reading the exact pinned vscode source the patch applies against, verifying the patch applies cleanly and passes the real `tsc` type-check in code-server's own CI, and reasoning through the protocol from source — not by guessing, but also not by observation.
+There are two distinct verification tiers in CI (`.github/workflows/build.yml`), and it matters which one a given claim rests on:
+
+1. **Compiles** — unsigned build against `generic/platform=iOS`, no Apple Developer account needed. Everything in this project reaches this tier.
+2. **Simulator smoke test** — the Simulator needs no code signing, so CI actually boots one, installs the built app, launches it, and captures a screenshot + log as artifacts. This is real runtime evidence that the app launches and SwiftUI renders without crashing — not nothing. But it is **not** evidence that NodeRuntimeExtension/ExtensionHostRuntime work: Apple's Network Extension framework has long-standing, well-known Simulator support gaps, so the two `NEPacketTunnelProvider` extensions activating is not expected to be exercised by this test, screenshot or no screenshot.
+
+Neither tier is "verified working on the actual target (a real, sideloaded iPad)." That requires a real device and a Mac to sign/deploy with, which this pipeline does not have. Where this doc says something "should" work, that means: read from the exact pinned source, patch verified to apply and type-check for real, protocol reasoned through — not observed running.
 
 ## Layout
 

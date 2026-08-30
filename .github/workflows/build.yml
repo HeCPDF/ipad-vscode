@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: Compile (unsigned, generic iOS device)
+    name: Compile + Simulator smoke test
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +54,7 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Build (no code signing)
+      - name: Build (no code signing, generic device)
         run: |
           xcodebuild build \
             -project iPadVSCode.xcodeproj \
@@ -64,3 +64,46 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM=""
+
+      # The Simulator needs no code signing at all, and — unlike the device
+      # build above — can actually be booted and launched right here in CI.
+      # This is a real runtime smoke test, not just a compile check: it
+      # proves the app launches and SwiftUI renders without crashing. It is
+      # NOT proof the NEPacketTunnelProvider extensions work — Apple's
+      # Network Extension framework has long-standing, well-known gaps in
+      # Simulator support, so NodeRuntimeExtension/ExtensionHostRuntime
+      # activating is not expected to be exercised by this test. See
+      # README.md for what this does and doesn't establish.
+      - name: Build for Simulator
+        id: sim_build
+        run: |
+          DERIVED_DATA=/tmp/derived-sim
+          xcodebuild build \
+            -project iPadVSCode.xcodeproj \
+            -scheme iPadVSCode \
+            -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO
+          APP_PATH=$(find "$DERIVED_DATA/Build/Products" -maxdepth 2 -name 'iPadVSCode.app' | head -1)
+          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Boot Simulator, install, launch, screenshot
+        run: |
+          set -e
+          UDID=$(xcrun simctl list devices available -j \
+            | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for rt in d.values() for x in rt if 'iPad Pro' in x['name']))")
+          echo "using simulator $UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" "${{ steps.sim_build.outputs.app_path }}"
+          xcrun simctl launch "$UDID" com.hecpdf.ipadvscode
+          sleep 8
+          mkdir -p artifacts
+          xcrun simctl io "$UDID" screenshot artifacts/simulator-launch.png
+          xcrun simctl spawn "$UDID" log show --predicate 'subsystem CONTAINS "com.hecpdf.ipadvscode"' --last 1m > artifacts/simulator-log.txt || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-smoke-test
+          path: artifacts
