@@ -123,6 +123,28 @@ jobs:
           echo "attempt outcome: ${{ steps.attempt.outcome }}"
           find /tmp/sqlite3-src/sqlite3-module -iname "*.node" -o -iname "*ios*" 2>&1 || true
 
+      - name: Dump generated Makefile/.mk rules mentioning exceptions
+        # Three attempts at fixing this from the gyp-source level
+        # (env vars, target dependency, target cflags_cc) all left the
+        # actual compiler invocation unchanged — meaning -fno-exceptions
+        # isn't losing an ordering fight in the gyp-generated flags, it's
+        # coming from somewhere the target-level source doesn't reach.
+        # Read the real generated build files directly instead of guessing
+        # further at the gyp-source level.
+        if: always()
+        run: |
+          echo "=== find build dirs ==="
+          find /tmp/sqlite3-src/sqlite3-module -type d \( -name build -o -name out \) 2>&1
+          echo "=== all Makefile/.mk files ==="
+          find /tmp/sqlite3-src/sqlite3-module -iname "Makefile" -o -iname "*.mk" 2>&1
+          echo "=== full content of each ==="
+          for f in $(find /tmp/sqlite3-src/sqlite3-module -iname "Makefile" -o -iname "*.mk" 2>/dev/null); do
+            echo "----- $f -----"
+            cat "$f"
+          done
+          echo "=== grep for exceptions across all of them ==="
+          find /tmp/sqlite3-src/sqlite3-module -iname "Makefile" -o -iname "*.mk" 2>/dev/null | xargs grep -n "exceptions" 2>&1 || true
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
