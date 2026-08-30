@@ -65,9 +65,11 @@ targets:
           - group.com.hecpdf.ipadvscode
         com.apple.developer.networking.networkextension:
           - packet-tunnel-provider
-    # NodeMobile.xcframework gets linked here in a follow-up pass, once its
-    # real API surface has been confirmed from the built artifact's headers.
+    dependencies:
+      - framework: Frameworks/NodeMobile.xcframework
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hecpdf.ipadvscode.noderuntime
         SKIP_INSTALL: YES
+        FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/Frameworks"

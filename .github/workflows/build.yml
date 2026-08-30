@@ -10,15 +10,29 @@ on:
 jobs:
   build:
     name: Compile (unsigned, generic iOS device)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+      - name: Xcode version
+        run: xcodebuild -version
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Fetch NodeMobile.xcframework from the nodejs-mobile fork
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          run_id=$(gh run list --repo HeCPDF/nodejs-mobile --workflow Build --status success --branch main -L 1 --json databaseId -q '.[0].databaseId')
+          if [ -z "$run_id" ]; then
+            echo "::error::no successful nodejs-mobile Build run found"
+            exit 1
+          fi
+          echo "using nodejs-mobile run $run_id"
+          gh run download "$run_id" --repo HeCPDF/nodejs-mobile --name nodejs-mobile-ios --dir /tmp/nodejs-mobile-ios
+          mkdir -p Frameworks
+          cp -R /tmp/nodejs-mobile-ios/NodeMobile.xcframework Frameworks/
 
       - name: Generate Xcode project
         run: xcodegen generate

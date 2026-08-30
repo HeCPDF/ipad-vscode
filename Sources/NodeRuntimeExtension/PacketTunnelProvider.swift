@@ -1,4 +1,5 @@
 import NetworkExtension
+import NodeMobile
 import os
 
 /// This is not a real VPN. `com.apple.developer.networking.networkextension`
@@ -33,12 +34,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 return
             }
 
-            // TODO(node-runtime): start the embedded Node engine here once
-            // NodeMobile.xcframework's real API has been confirmed, e.g.
-            //   NodeRunner.startEngine(withArguments: ["node", "server.js"])
-            // and have server.js bind an HTTP server on
-            // RuntimeConfig.loopbackPort so the app's WKWebView can load it.
-            self?.log.info("tunnel settings applied; node runtime bring-up pending")
+            self?.log.info("tunnel settings applied; starting node runtime")
+            self?.startNodeRuntime()
             completionHandler(nil)
         }
     }
@@ -53,5 +50,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // Placeholder echo until the real request routing to the Node
         // runtime (LSP/DAP bridge, health checks, etc.) is wired up.
         completionHandler?(messageData)
+    }
+
+    /// `node_start` runs Node's event loop and does not return in normal
+    /// operation, so it must never be called on the main thread. The entry
+    /// script is a placeholder — code-server's actual bundled server entry
+    /// point gets baked in as an extension resource in a later pass; until
+    /// then this will fail at runtime with a "module not found" from Node,
+    /// which is expected and does not affect compilation.
+    private func startNodeRuntime() {
+        let entryScript = Bundle.main.path(forResource: "server", ofType: "js") ?? "server.js"
+        let arguments = ["node", "--max-old-space-size=256", entryScript]
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            var cArgs = arguments.map { strdup($0) }
+            defer { cArgs.forEach { free($0) } }
+            cArgs.withUnsafeMutableBufferPointer { buffer in
+                _ = node_start(Int32(buffer.count), buffer.baseAddress)
+            }
+        }
     }
 }
