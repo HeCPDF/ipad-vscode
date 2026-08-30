@@ -13,11 +13,21 @@ final class OpenFolderFlowUITests: XCTestCase {
         XCTAssertTrue(openFolderButton.waitForExistence(timeout: 10), "Open Folder button should appear on first launch")
         openFolderButton.tap()
 
-        // UIDocumentPickerViewController is a system sheet; its exact
-        // accessibility hierarchy belongs to Apple, not us, so this only
-        // checks that *our* prompt got covered by something — not that the
-        // picker's internals look a particular way.
-        let promptStillFrontmost = app.staticTexts["Open a folder to start editing"].waitForExistence(timeout: 2)
-        XCTAssertFalse(promptStillFrontmost, "the open-folder prompt should be covered by the picker sheet after tapping Open Folder…")
+        // UIDocumentPickerViewController is a system sheet; checking that
+        // *our* prompt got covered is unreliable (a background view
+        // controller can still report as accessibility-"existing" under a
+        // modal sheet even though it's not visible). Instead, check for a
+        // system element the picker itself is guaranteed to present: its
+        // Cancel button.
+        attachScreenshot(app, name: "after-tap-open-folder")
+        let pickerCancelButton = app.buttons["Cancel"]
+        XCTAssertTrue(pickerCancelButton.waitForExistence(timeout: 5), "the document picker's Cancel button should appear after tapping Open Folder…")
+    }
+
+    private func attachScreenshot(_ app: XCUIApplication, name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }
