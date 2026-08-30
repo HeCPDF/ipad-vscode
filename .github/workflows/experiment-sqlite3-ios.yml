@@ -74,7 +74,11 @@ jobs:
           # in its error output. Force-replace the nested copy directly.
           rm -rf node_modules/prebuild-for-nodejs-mobile/node_modules/nodejs-mobile-gyp
           cp -R node_modules/nodejs-mobile-gyp node_modules/prebuild-for-nodejs-mobile/node_modules/nodejs-mobile-gyp
-          node -e "console.log(require.resolve('nodejs-mobile-gyp/package.json', {paths: [require.resolve('prebuild-for-nodejs-mobile')]}))"
+          # prebuild-for-nodejs-mobile is a CLI-only package (no requireable
+          # main), so require.resolve('prebuild-for-nodejs-mobile') itself
+          # fails — that's not a sign the replace failed, just a broken way
+          # to check it. A plain file check is enough here.
+          grep '"version"' node_modules/prebuild-for-nodejs-mobile/node_modules/nodejs-mobile-gyp/package.json
 
       - name: Attempt ios-arm64 prebuild
         id: attempt
