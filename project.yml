@@ -1,0 +1,73 @@
+name: iPadVSCode
+options:
+  bundleIdPrefix: com.hecpdf.ipadvscode
+  deploymentTarget:
+    iOS: "16.1"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGNING_ALLOWED: NO
+    DEVELOPMENT_TEAM: ""
+    ENABLE_BITCODE: NO
+
+targets:
+  iPadVSCode:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources/App
+    resources:
+      - path: Resources
+    info:
+      path: Sources/App/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIRequiresFullScreen: false
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    entitlements:
+      path: Sources/App/App.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.hecpdf.ipadvscode
+    dependencies:
+      - target: NodeRuntimeExtension
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hecpdf.ipadvscode
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+
+  NodeRuntimeExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Sources/NodeRuntimeExtension
+    info:
+      path: Sources/NodeRuntimeExtension/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+    entitlements:
+      path: Sources/NodeRuntimeExtension/NodeRuntimeExtension.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.hecpdf.ipadvscode
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+    # NodeMobile.xcframework gets linked here in a follow-up pass, once its
+    # real API surface has been confirmed from the built artifact's headers.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hecpdf.ipadvscode.noderuntime
+        SKIP_INSTALL: YES
