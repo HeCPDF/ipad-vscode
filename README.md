@@ -1,53 +1,57 @@
 # iPadVSCode
 
-Native iPadOS shell for a VSCode-like editor, built on top of:
+Native iPadOS shell for the real, unmodified VSCode editor (not a web/limited-extension edition), built on top of:
 
-- **[code-server](https://github.com/HeCPDF/code-server)** — the actual editor (VSCode web build + Node backend), running headless.
+- **[code-server](https://github.com/HeCPDF/code-server)** — the actual editor (full VSCode + Node backend), running headless, patched (see below) to run on iOS.
 - **[nodejs-mobile](https://github.com/HeCPDF/nodejs-mobile)** — embeds the Node.js runtime as a library (`NodeMobile.xcframework`), no subprocess spawning required.
-- A `NEPacketTunnelProvider` app extension — not a real VPN. It's the one Apple-sanctioned extension point that gives a sideloaded app a long-lived, independently-launchable background *process* with a public start API and a public IPC channel, which is what hosts the embedded Node runtime.
-- `WKWebView` in the main app, pointed at `http://127.0.0.1:8482` once the extension's Node runtime is up, serving the code-server web UI.
+- Two `NEPacketTunnelProvider` app extensions — not a real VPN. This is the one Apple-sanctioned extension point that gives a sideloaded app a long-lived, independently-launchable background *process* with a public start API and a public IPC channel:
+  - **NodeRuntimeExtension** runs code-server's server.
+  - **ExtensionHostRuntime** runs VSCode's real Node extension host, in its own process, because iOS won't let NodeRuntimeExtension `fork()` it directly (see "Extension host" below).
+- `WKWebView` in the main app, pointed at `http://127.0.0.1:8482` once NodeRuntimeExtension is up, serving the code-server web UI.
+- A real folder picker (`UIDocumentPickerViewController` + security-scoped bookmark) for choosing the workspace — not limited to a sandboxed placeholder directory.
 
-This is a **sideload-only** project (see project history for why): it deliberately uses a network-extension entitlement for a non-VPN purpose, which App Store review would reject.
+This is a **sideload-only** project: it deliberately uses a network-extension entitlement for a non-VPN purpose (to get independently-launchable background processes), which App Store review would reject.
 
 ## Status
 
-Early skeleton. Current milestone is **"compiles via CI"**, tracked in `.github/workflows/build.yml` (unsigned build against `generic/platform=iOS`, no Apple Developer account needed). Runtime behavior is not yet testable here — there's no signed build and no device farm — so correctness is verified by inspection and by getting the real dependencies (NodeMobile's actual header surface, code-server's actual asset layout) into the build rather than by guessing.
+Everything below **compiles via CI** (`.github/workflows/build.yml`: unsigned build against `generic/platform=iOS`, no Apple Developer account needed — see `.github/workflows/build.yml` runs for the current pass/fail state). That's the milestone this project is tracking, not "verified working" — **nothing here has run on a device or simulator**. There's no signed build and no test harness in this pipeline, so correctness is established by: reading the exact pinned vscode source the patch applies against, verifying the patch applies cleanly and passes the real `tsc` type-check in code-server's own CI, and reasoning through the protocol from source — not by guessing, but also not by observation.
 
 ## Layout
 
-- `Sources/App` — main app target (SwiftUI + WKWebView + `TunnelController` which drives the extension via `NETunnelProviderManager`)
-- `Sources/NodeRuntimeExtension` — the packet-tunnel-provider extension (`PacketTunnelProvider.swift`)
+- `Sources/App` — main app: SwiftUI + WKWebView, `TunnelController` (drives both extensions via `NETunnelProviderManager`, watches for exthost launch requests), folder picker in `ContentView.swift`
+- `Sources/NodeRuntimeExtension` — runs code-server (`PacketTunnelProvider.swift`); resources include the fetched-and-trimmed code-server build (folder reference, not committed to git)
+- `Sources/ExtensionHostRuntime` — runs the real Node extension host (`ExtensionHostTunnelProvider.swift`)
+- `Sources/Shared` — code compiled into every target: `RuntimeConfig` (loopback port, App Group id), `ExtensionHostLaunchRequest` (the NodeRuntimeExtension → ExtensionHostRuntime hand-off contract), `WorkspaceSelection` (security-scoped bookmark storage)
 - `project.yml` — [XcodeGen](https://github.com/yonaskolb/XcodeGen) spec; the `.xcodeproj` is generated in CI, not committed
-- `Resources` — static assets bundled into the app (placeholder for now)
+- `scripts/trim-code-server.sh` — removes only `node-pty` from the fetched code-server build (the one genuine iOS sandbox hard-wall — see below), nothing else
 
-## Status detail
+## Extension host: real Node exthost via a second process
 
-`NodeMobile.xcframework` is linked and `node_start()` is called for real (confirmed API: a single C function, `int node_start(int argc, char *argv[])` — no Objective-C wrapper class).
+This project targets the **real, unmodified Node extension host** — not vscode.dev/github.dev's browser Web Worker extension host. Full feature set is the goal; things get cut only where iOS genuinely leaves no option, not for convenience.
 
-CI now fetches the real code-server build, strips it with `scripts/trim-code-server.sh` (removes native `.node` modules that can't load on iOS regardless of CPU arch — different Mach-O platform tag and Node ABI than nodejs-mobile's libnode — and drops extensions like Copilot that bundle their own), and bundles the result as a folder reference into the extension. `PacketTunnelProvider` launches `code-server/out/node/entry.js --auth none --bind-addr 127.0.0.1:8482 <workspace>` if that bundle is present, falling back to the placeholder `server.js` otherwise.
+**The problem**: `cp.fork()` (`vscode/src/vs/server/node/extensionHostConnection.ts`) is how every other platform starts the extension host. iOS denies `fork`/`posix_spawn` to third-party processes outright, at the sandbox-profile level — unrelated to JIT or signing, no known workaround short of a full jailbreak (out of scope; this is a sideload-only project).
 
-**This has not run on a device or simulator** — there's no signed build and no test harness in this pipeline, so "should boot per `src/node/cli.ts`" is as far as verification goes right now. A confirmed architectural blocker independent of all this: code-server's Node extension host is spawned via `child_process.fork` (`vscode/src/vs/server/node/extensionHostConnection.ts`), and iOS sandboxes third-party processes out of `fork`/`posix_spawn` entirely — this has nothing to do with JIT or signing and can't be worked around the way those can. The planned fix is to only preset extensions with a web-worker build (the same mechanism vscode.dev/github.dev use) so the client never opens the connection that would trigger `cp.fork` in the first place — not yet implemented.
+**The fix**: the exthost protocol doesn't actually require a literal parent/child relationship. On POSIX, when `_canSendSocket` is false, the only thing that happens is a plain `net.Server` listens on a Unix-domain-socket path (`createRandomIPCHandle()`), and whatever process connects to it is treated as the extension host. So:
+- `code-server/patches/ios-exthost-no-fork.diff` forces `_canSendSocket` off whenever `IPADVSCODE_NO_FORK` is set, and replaces `cp.fork()` with writing the launch parameters (`bootstrapForkPath`/`args`/`env`) to a JSON file in the shared App Group container instead of forking.
+- **ExtensionHostRuntime**, launched by iOS (not by us) when the app calls `startVPNTunnel()` on its `NETunnelProviderManager`, reads that file and execs `bootstrap-fork.js` itself via `node_start()`, connecting to the same socket.
+- Both processes get `TMPDIR` pointed at the shared container so `createRandomIPCHandle()`'s socket path resolves for both sides.
+- The app can't be signaled by an extension directly (extensions can't call back into the containing app), so `TunnelController` watches the shared container with a `DispatchSource` for the launch-request file and starts ExtensionHostRuntime when it appears.
 
-## Extension host: real Node exthost via a second process, not the web-worker one
+**Verified**: the patch applies cleanly with `patch -p1` against the exact pinned vscode commit code-server builds (`08d4889f9ec4a1685d257b9b95de036c8e1ce1e5`), and — after one round-trip fixing a real `error TS2531: Object is possibly 'null'` (wrapping the `cp.fork` assignment in a conditional broke TypeScript's control-flow narrowing for a later unguarded use of the same field, three call sites down) — it now passes the actual `tsc` type-check in code-server's own CI build, not just a hand-check.
 
-Decision (superseding an earlier draft of this doc): this project targets the **real, unmodified Node extension host** — not vscode.dev/github.dev's browser Web Worker extension host. Full feature set is the goal; things get cut only where iOS genuinely leaves no option (see below), not for convenience.
+**Not verified / known gaps**:
+- Nothing has run on a device. The socket hand-off should work per the protocol read from source; that's the extent of the confidence level.
+- iOS gives no reliable way to wake a fully suspended app. If the user has backgrounded the app when NodeRuntimeExtension needs the exthost (re)started, the file-watch hand-off may simply not fire.
+- `acceptReconnection()`'s fd-passing branch and `shortenReconnectionGraceTimeIfNecessary()` assume a real `ChildProcess` handle, which this path doesn't have (documented in the patch itself) — reconnect-after-drop for the exthost specifically is unaddressed.
 
-`cp.fork()` (`vscode/src/vs/server/node/extensionHostConnection.ts`) can't run on iOS — third-party processes are denied `fork`/`posix_spawn` outright, unrelated to JIT/signing, no known workaround short of a full jailbreak (out of scope). But the exthost protocol itself doesn't require a literal fork: the parent and child only ever talk over a named pipe (a Unix domain socket on POSIX — `createRandomIPCHandle()` in `vscode/src/vs/base/parts/ipc/node/ipc.net.ts`), which any two processes that can see the same path can use.
+## The one real feature cut: no integrated terminal
 
-So: a second extension target, **ExtensionHostRuntime**, also runs `NodeMobile`'s `node_start()`, but pointed at `bootstrap-fork.js --type=extensionHost` instead of code-server's server. iOS (not our code) launches it as an independent process, sidestepping the fork ban entirely. Both extensions get `TMPDIR` set to the shared App Group container so the socket path resolves for both sides. NodeRuntimeExtension → ExtensionHostRuntime hand-off is a JSON file (`ExtensionHostLaunchRequest`, in `Sources/Shared`) plus a Darwin notification that the app (the only thing that can call `startVPNTunnel()` on an extension) observes and acts on.
-
-**Current state**: the `extensionHostConnection.ts` patch (`code-server/patches/ios-exthost-no-fork.diff`) is written, verified to apply cleanly (`patch -p1 --dry-run` against the exact pinned vscode commit code-server builds — `08d4889f9ec4a1685d257b9b95de036c8e1ce1e5`) and pushed to the code-server fork's patch series, gated entirely behind `IPADVSCODE_NO_FORK` so it changes nothing on other platforms. The Swift side (`ExtensionHostRuntime` target, `ExtensionHostTunnelProvider`, `ExtensionHostLaunchRequest`) is wired end to end: `PacketTunnelProvider` sets `IPADVSCODE_NO_FORK`/`IPADVSCODE_SHARED_CONTAINER`/`TMPDIR` before `node_start()`, matching what the patch reads.
-
-**Not verified**: brace/paren balance was checked, but there's no `tsc` type-check in this pipeline yet (code-server's own `build:vscode` step will be the first real compile check, next CI run). And regardless of whether it type-checks, nothing here has run on a device — "the socket hand-off should work per the protocol read from source" is as far as verification goes.
-
-**Not yet resolved**: `TunnelController` watches the shared container for the launch-request file with a `DispatchSource` while the app process is alive, which replaced an earlier Darwin-notification design — but neither approach solves the underlying problem, which is that iOS gives no reliable way to wake a fully suspended app when NodeRuntimeExtension needs the exthost (re)started. If the user has backgrounded the app, this hand-off may simply not fire.
-
-**Also not addressed**: `acceptReconnection()`'s fd-passing branch and `shortenReconnectionGraceTimeIfNecessary()` assume a real `ChildProcess` handle, which this path doesn't have (documented in the patch itself) — reconnect-after-drop for the exthost specifically is a known gap.
+`node-pty` needs a real kernel pty (`posix_openpt` / `/dev/ptmx`). iOS denies that device-node access to third-party sandboxed processes outright, the same way it denies `fork()` — this is a different sandbox rule than the extension-host one above, and the multi-process trick that routes around `fork()` does **not** unlock it (getting another *process* isn't the same as getting a real pty device). No workaround identified short of a full jailbreak. Everything else — Copilot, other bundled extensions, `argon2`, the marketplace — is intentionally left in, not trimmed for convenience; see `scripts/trim-code-server.sh`.
 
 ## Not done yet
 
-- The `extensionHostConnection.ts` patch itself (see above)
-- File System Provider bridging iOS Files/iCloud into the editor
-- `product.json` changes to bake in the fixed set of built-in extensions and drop the marketplace UI
-- A real iOS cross-compile for `@vscode/sqlite3` / `@parcel/watcher` / `@vscode/spdlog` (their bundled `.node` files are linux-x64 and won't load on iOS as-is; kept in the bundle rather than deleted, since deleting isn't a fix — see trim-code-server.sh) — until then, storage/watcher features they back will not work at runtime
-- Resolving the Darwin-notification-while-backgrounded gap above
+- Running any of this on an actual device or simulator (this pipeline has no way to do that)
+- File System Provider bridging so the *rest* of code-server's file access (not just the workspace root, which the folder picker now handles) can reach iOS Files/iCloud
+- A real iOS cross-compile for `@vscode/sqlite3` / `@parcel/watcher` / `@vscode/spdlog` (their bundled `.node` files are linux-x64 and won't load on iOS as-is; kept in the bundle rather than deleted, since deleting isn't a fix) — until then, storage/watcher features they back will not work at runtime
+- The suspended-app wake-up gap above
+- `product.json` / built-in-extensions decisions have not been revisited since the "full feature set" decision — currently just using code-server's defaults
