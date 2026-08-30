@@ -45,39 +45,30 @@ jobs:
           grep gypfile package.json
 
       - name: Install prebuild-for-nodejs-mobile locally, override its bundled nodejs-mobile-gyp
-        # npx installs into an isolated, ephemeral node_modules each time, so
-        # there's no way to override one of its transitive deps that way.
         # prebuild-for-nodejs-mobile@18.17.7 resolves nodejs-mobile-gyp via
-        # `require.resolve('nodejs-mobile-gyp/bin/node-gyp.js')`, which walks
-        # up from its own location — pinned to ^0.3.1 in its package.json,
-        # and 0.3.1 is confirmed broken (hardcoded Python-2-only `print`
-        # syntax in its version-detection code, crashes regardless of which
-        # Python interpreter it's pointed at). Installing the tool for real
-        # (not via npx) and then explicitly installing nodejs-mobile-gyp@0.4.0
-        # in the same project hoists 0.4.0 to the top-level node_modules,
-        # which `require.resolve` finds first.
+        # `require.resolve(...)`, which walks up from ITS OWN location and
+        # finds its own pinned ^0.3.1 nested inside
+        # node_modules/prebuild-for-nodejs-mobile/node_modules/ — 0.3.1 is
+        # confirmed broken (hardcoded Python-2-only `print` syntax in its
+        # version-detection code, crashes regardless of which Python
+        # interpreter it's pointed at). Two things that did NOT work before
+        # landing on this: (1) `npm install nodejs-mobile-gyp@0.4.0` at the
+        # top level only adds a second copy alongside the nested one — 0.x
+        # semver ranges aren't compatible enough for npm to hoist/dedupe, so
+        # resolution from inside prebuild-for-nodejs-mobile's own code still
+        # finds its nested 0.3.1; (2) `cp -R`'ing 0.4.0's folder directly
+        # over the nested copy gets the version right but leaves its own
+        # transitive deps (e.g. `which`) unresolved/mismatched, crashing
+        # differently. A real `npm install` run from inside the nested
+        # package's own directory is what actually gets 0.4.0 correctly in
+        # place, dependencies included.
         run: |
           mkdir -p /tmp/prebuild-tool
           cd /tmp/prebuild-tool
           npm install prebuild-for-nodejs-mobile@18.17.7
+          cd node_modules/prebuild-for-nodejs-mobile
           npm install nodejs-mobile-gyp@0.4.0
-          npm ls nodejs-mobile-gyp || true
-          # Hoisting alone doesn't work here: 0.4.0 (top-level, what we just
-          # installed) and ^0.3.1 (prebuild-for-nodejs-mobile's own
-          # requirement) aren't semver-compatible as 0.x versions, so npm
-          # keeps BOTH — one at top level, one nested inside
-          # node_modules/prebuild-for-nodejs-mobile/node_modules/. Node's
-          # resolution, called from prebuild-for-nodejs-mobile's own code,
-          # finds the nested (old, broken) one first regardless of what's
-          # hoisted — confirmed by a prior attempt still showing
-          # ".../prebuild-for-nodejs-mobile/node_modules/nodejs-mobile-gyp"
-          # in its error output. Force-replace the nested copy directly.
-          rm -rf node_modules/prebuild-for-nodejs-mobile/node_modules/nodejs-mobile-gyp
-          cp -R node_modules/nodejs-mobile-gyp node_modules/prebuild-for-nodejs-mobile/node_modules/nodejs-mobile-gyp
-          # prebuild-for-nodejs-mobile is a CLI-only package (no requireable
-          # main), so require.resolve('prebuild-for-nodejs-mobile') itself
-          # fails — that's not a sign the replace failed, just a broken way
-          # to check it. A plain file check is enough here.
+          cd /tmp/prebuild-tool
           grep '"version"' node_modules/prebuild-for-nodejs-mobile/node_modules/nodejs-mobile-gyp/package.json
 
       - name: Attempt ios-arm64 prebuild
