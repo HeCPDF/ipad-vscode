@@ -1,8 +1,12 @@
 name: iPadVSCode
 options:
   bundleIdPrefix: com.hecpdf.ipadvscode
+  # Only the latest iPadOS is a target (currently 26, with 27 in beta) —
+  # narrower device support in exchange for using iPadOS 26's menu bar and
+  # windowing convergence with macOS instead of working around older,
+  # iPhone-shaped UIKit defaults.
   deploymentTarget:
-    iOS: "16.1"
+    iOS: "26.0"
   createIntermediateGroups: true
 
 settings:
@@ -29,8 +33,13 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        # Deprecated on iPadOS 26 (ignored in favor of the new resizable
+        # windowing being the default) — left in only for older-SDK clarity,
+        # not load-bearing. See UIWindowScene.sizeRestriction in
+        # ContentView.swift for the actual iPadOS 26 minimum-size control.
         UIRequiresFullScreen: false
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true

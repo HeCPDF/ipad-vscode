@@ -10,7 +10,9 @@ on:
 jobs:
   build:
     name: Compile + Simulator smoke test + UI tests
-    runs-on: macos-15
+    # Needs the iOS/iPadOS 26 SDK (project.yml's deploymentTarget), which
+    # only ships with Xcode 26+ — not present on macos-15.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 

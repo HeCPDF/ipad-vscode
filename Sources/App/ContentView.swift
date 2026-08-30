@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 import WebKit
 
 struct ContentView: View {
+    @EnvironmentObject private var menuBridge: MenuBridge
     @StateObject private var tunnel = TunnelController.shared
     @State private var webView = WKWebView()
     @State private var isPickingFolder = false
@@ -40,6 +41,24 @@ struct ContentView: View {
                 webView.load(URLRequest(url: RuntimeConfig.loopbackURL))
             }
         }
+        .onChange(of: menuBridge.openFolderRequested) { _, requested in
+            guard requested else { return }
+            isPickingFolder = true
+            menuBridge.openFolderRequested = false
+        }
+        .onAppear(perform: applyMinimumWindowSize)
+    }
+
+    /// iPadOS 26's windows are freely resizable by default (UIRequiresFullScreen
+    /// is deprecated/ignored) — an editor is genuinely unusable below some
+    /// width, the same way VSCode itself enforces a minimum window size on
+    /// macOS. There's no SwiftUI-level API for this on iPadOS yet, so it's
+    /// set directly on the underlying UIWindowScene.
+    private func applyMinimumWindowSize() {
+        guard let scene = UIApplication.shared.connectedScenes
+            .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene
+        else { return }
+        scene.sizeRestrictions?.minimumSize = CGSize(width: 500, height: 400)
     }
 
     private var startingOverlay: some View {
@@ -119,4 +138,5 @@ private struct EditorWebView: UIViewRepresentable {
 
 #Preview {
     ContentView()
+        .environmentObject(MenuBridge())
 }
