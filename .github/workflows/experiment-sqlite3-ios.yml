@@ -128,23 +128,29 @@ jobs:
         # concrete next step after three attempts at overriding this from
         # the consuming module's own binding.gyp had zero effect.
         run: |
-          echo "=== locating common.gypi ==="
-          # NOT node-gyp's standard ~/.cache/node-gyp mechanism — confirmed
-          # by round 1's compile command -I paths: headers are bundled
-          # directly as package assets inside nodejs-mobile-react-native
-          # (a transitive dep of prebuild-for-nodejs-mobile), not fetched
-          # into a cache dir at all. A prior attempt searching the standard
-          # node-gyp cache locations found nothing (empty result) — this is
-          # why, not a sign the file doesn't exist.
-          CACHED=$(find /tmp/prebuild-tool/node_modules -iname "common.gypi" -path "*ios*" 2>/dev/null | head -1)
-          echo "found: $CACHED"
-          if [ -z "$CACHED" ]; then
-            echo "::warning::no cached common.gypi found, cannot patch"
-            exit 0
-          fi
-          grep -n "fno-exceptions\|fno-rtti" "$CACHED"
-          sed -i.bak "s/'-fno-rtti', '-fno-exceptions', /'-frtti', '-fexceptions', /" "$CACHED"
-          grep -n "frtti\|fexceptions\|fno-exceptions\|fno-rtti" "$CACHED"
+          echo "=== ALL copies of common.gypi anywhere on the runner ==="
+          # A prior attempt patched the one copy found under
+          # /tmp/prebuild-tool/node_modules (nodejs-mobile-react-native's
+          # bundled headers) — confirmed via grep that the patch was
+          # written correctly — but round 2's compile command still showed
+          # unpatched -fno-exceptions/-fno-rtti unchanged, even after
+          # `rm -rf build` to force a fresh configure. That means configure
+          # reads a DIFFERENT copy than the one just patched. Search
+          # everywhere, not just the one path already tried.
+          find / -iname "common.gypi" 2>/dev/null | while read -r f; do
+            echo "--- $f ---"
+            grep -n "fno-exceptions\|fno-rtti" "$f" 2>/dev/null || echo "(no exceptions/rtti mention)"
+          done
+          echo "=== node-gyp's own devdir/nodedir config, from round 1's configure output ==="
+          grep -i "devdir\|nodedir\|gyp info find" /tmp/prebuild-round1.log | head -20
+          echo "=== patch every copy found, not just one ==="
+          find / -iname "common.gypi" 2>/dev/null | while read -r f; do
+            if grep -q "fno-exceptions" "$f" 2>/dev/null; then
+              sed -i.bak "s/'-fno-rtti', '-fno-exceptions', /'-frtti', '-fexceptions', /" "$f"
+              echo "patched: $f"
+              grep -n "frtti\|fexceptions" "$f"
+            fi
+          done
 
       - name: Attempt ios-arm64 prebuild (round 2, after patching common.gypi)
         id: attempt
