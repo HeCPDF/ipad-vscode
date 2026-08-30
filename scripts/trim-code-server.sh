@@ -38,6 +38,20 @@ cd "$RELEASE_DIR"
 # this specific one short of a full jailbreak, which is out of scope.
 rm -rf lib/vscode/node_modules/node-pty
 
-echo "trim complete (node-pty only). remaining .node files (kept, for future cross-compile):"
+# Unrelated to the iOS sandbox: npm's node_modules/.bin/* entries are
+# symlinks (pointing at the real script inside each package's own
+# directory), and the macOS CI runner's `zip -y` preserves them as real
+# POSIX symlinks with Unix mode bits set in the archive's external file
+# attributes. Several Windows-based IPA signing/repackaging tools can't
+# parse that and fail with an opaque "Failed to read: <name>" error on the
+# first one they hit (reported against a real IPA build: "node-gyp-build").
+# These are pure CLI dev-tool shortcuts (js-yaml, semver, cross-env, etc.)
+# that code-server's own server process never invokes at runtime — it runs
+# via `node out/node/entry.js` and requires its dependencies directly, not
+# through .bin/* — so removing them is a zero-functionality-loss fix for
+# Windows tooling compatibility, not a feature cut.
+find . -type d -name .bin -exec rm -rf {} +
+
+echo "trim complete (node-pty, node_modules/.bin symlinks). remaining .node files (kept, for future cross-compile):"
 find . -name "*.node"
 echo "size: $(du -sh . | cut -f1)"

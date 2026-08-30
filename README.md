@@ -36,7 +36,7 @@ None of these three tiers is "verified working on the actual target (a real, sid
 - `Sources/ExtensionHostRuntime` — runs the real Node extension host (`ExtensionHostTunnelProvider.swift`)
 - `Sources/Shared` — code compiled into every target: `RuntimeConfig` (loopback port, App Group id), `ExtensionHostLaunchRequest` (the NodeRuntimeExtension → ExtensionHostRuntime hand-off contract), `WorkspaceSelection` (security-scoped bookmark storage)
 - `project.yml` — [XcodeGen](https://github.com/yonaskolb/XcodeGen) spec; the `.xcodeproj` is generated in CI, not committed
-- `scripts/trim-code-server.sh` — removes only `node-pty` from the fetched code-server build (the one genuine iOS sandbox hard-wall — see below), nothing else
+- `scripts/trim-code-server.sh` — removes `node-pty` (the one genuine iOS sandbox hard-wall — see below) and `node_modules/.bin/*` symlinks (unrelated to iOS; several Windows-based IPA signing tools can't parse the POSIX symlinks CI's `zip -y` preserves there, and these are dev-only CLI shortcuts code-server's server process never invokes at runtime) — nothing else
 
 ## Extension host: real Node exthost via a second process
 
