@@ -151,6 +151,20 @@ jobs:
             fi
           done
 
+      - name: Debug session (tmate)
+        # Round 2 keeps showing -fno-exceptions/-fno-rtti in the actual
+        # compile command even though the exact common.gypi file node-gyp
+        # itself reports as --nodedir has been confirmed patched correctly
+        # on disk. That means gyp is reading a cached/snapshotted copy of
+        # this config from somewhere not yet located — needs live,
+        # interactive digging (run node-gyp configure --verbose by hand,
+        # watch what it actually opens) rather than another blind
+        # source-level patch attempt. Open with browser live logs (gh
+        # CLI/API don't support live-tailing an in-progress step) to grab
+        # the SSH connection string.
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 15
+
       - name: Attempt ios-arm64 prebuild (round 2, after patching common.gypi)
         id: attempt
         continue-on-error: true
