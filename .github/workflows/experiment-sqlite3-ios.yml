@@ -44,6 +44,36 @@ jobs:
           test -f binding.gyp && echo "binding.gyp present"
           grep gypfile package.json
 
+      - name: Patch binding.gyp to force -fexceptions
+        # Confirmed from the actual compile command line (grep for
+        # -f*exceptions in a prior run's verbose log): -DNAPI_CPP_EXCEPTIONS
+        # is correctly defined (node-addon-api's source correctly opts into
+        # try/throw), but the actual clang invocation also carries
+        # -fno-exceptions, disabling C++ exceptions at the language level
+        # regardless of that macro. binding.gyp's xcode_settings block
+        # (which is where CLANG_CXX_LIBRARY etc. live) doesn't apply here —
+        # gyp ERR's "make failed" confirms this build uses gyp's make
+        # generator, not the Xcode project generator, so xcode_settings is
+        # silently ignored; only cflags/cflags_cc are read. Whatever adds
+        # -fno-exceptions (nodejs-mobile's or prebuild-for-nodejs-mobile's
+        # own iOS cflags, not yet located exactly) must come after the
+        # target's own flags on the command line, since clang honors
+        # whichever of -f[no-]exceptions appears last — appending
+        # -fexceptions directly onto this target's cflags_cc should win.
+        run: |
+          cd /tmp/sqlite3-src/sqlite3-module
+          python3 -c "
+          import json
+          with open('binding.gyp') as f:
+              gyp = json.load(f)
+          for target in gyp['targets']:
+              if target.get('target_name') == 'vscode-sqlite3':
+                  target.setdefault('cflags_cc', []).append('-fexceptions')
+          with open('binding.gyp', 'w') as f:
+              json.dump(gyp, f, indent=2)
+          "
+          grep -A2 "cflags_cc" binding.gyp || true
+
       - name: Install prebuild-for-nodejs-mobile locally, override its bundled nodejs-mobile-gyp
         # prebuild-for-nodejs-mobile@18.17.7 resolves nodejs-mobile-gyp via
         # `require.resolve(...)`, which walks up from ITS OWN location and
