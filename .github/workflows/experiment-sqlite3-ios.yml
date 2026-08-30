@@ -14,23 +14,6 @@ jobs:
   try-prebuild:
     runs-on: macos-15
     steps:
-      - name: Diagnose brew install tmate in isolation
-        # A prior tmate debug-session attempt stalled for 7+ minutes with
-        # its last output being brew's own "Pouring tmate...done" line —
-        # that line is brew's *completion* message for unpacking the
-        # bottle, not necessarily the end of the whole `brew install`
-        # invocation (post-install hooks / linking run after it and don't
-        # always print anything). Testing that hypothesis directly, cheap
-        # and fast, before trying the full tmate action again: does a bare
-        # `brew install tmate` hang after that same line, or does it
-        # actually exit fine and the hang is really in tmate's own network
-        # layer (the original hypothesis)? `timeout` + `--verbose --debug`
-        # so this fails fast and loud instead of tying up the whole job.
-        run: |
-          timeout 120 brew install tmate --verbose --debug
-          echo "brew install exit code: $?"
-        continue-on-error: true
-
       - name: Xcode version
         run: xcodebuild -version
 
