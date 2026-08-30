@@ -13,7 +13,12 @@ import os
 /// 127.0.0.1.
 final class PacketTunnelProvider: NEPacketTunnelProvider {
     private let log = Logger(subsystem: "com.hecpdf.ipadvscode.noderuntime", category: "tunnel")
-    private var accessedSecurityScopedWorkspace: URL?
+    /// Every folder authorized this session, kept alive for the process's
+    /// lifetime (not just the most recent one) — multi-root workspaces
+    /// (CodeWorkspaceFile) need more than one simultaneously-accessible
+    /// external folder, and there's no signal here for "VSCode is truly
+    /// done with this folder" that would make it safe to release earlier.
+    private var accessedSecurityScopedWorkspaces: [URL] = []
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
         log.info("startTunnel")
@@ -38,8 +43,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         log.info("stopTunnel: \(String(describing: reason))")
-        accessedSecurityScopedWorkspace?.stopAccessingSecurityScopedResource()
-        accessedSecurityScopedWorkspace = nil
+        accessedSecurityScopedWorkspaces.forEach { $0.stopAccessingSecurityScopedResource() }
+        accessedSecurityScopedWorkspaces.removeAll()
         completionHandler()
     }
 
@@ -73,10 +78,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
         }
 
-        // Only one workspace is open at a time in this design — release the
-        // previous one before taking the new one.
-        accessedSecurityScopedWorkspace?.stopAccessingSecurityScopedResource()
-        accessedSecurityScopedWorkspace = url
+        if !accessedSecurityScopedWorkspaces.contains(where: { $0.path == url.path }) {
+            accessedSecurityScopedWorkspaces.append(url)
+        }
 
         respond(.init(resolvedPath: url.path, errorDescription: nil), to: completionHandler)
     }
@@ -120,12 +124,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let placeholderEntry = Bundle.main.path(forResource: "server", ofType: "js") ?? "server.js"
         let entryScript = FileManager.default.fileExists(atPath: bundledEntry) ? bundledEntry : placeholderEntry
 
+        // Only the primary workspace folder's bookmark persists across
+        // process restarts (WorkspaceSelection). Additional folders added
+        // via "Add Folder to Workspace…" (CodeWorkspaceFile) are
+        // re-authorized only for the current session — there's no bookmark
+        // store for those yet, a known gap, not silently dropped.
         if let appGroupContainer = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: RuntimeConfig.appGroupIdentifier),
             let bookmarked = WorkspaceSelection.resolveBookmark(in: appGroupContainer)
         {
             if bookmarked.startAccessingSecurityScopedResource() {
-                accessedSecurityScopedWorkspace = bookmarked
+                accessedSecurityScopedWorkspaces.append(bookmarked)
             } else {
                 log.error("startAccessingSecurityScopedResource failed for the previously-picked workspace folder")
             }

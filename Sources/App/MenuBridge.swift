@@ -6,4 +6,9 @@ import SwiftUI
 @MainActor
 final class MenuBridge: ObservableObject {
     @Published var openFolderRequested = false
+    /// Distinct from openFolderRequested: adds a folder to a multi-root
+    /// `.code-workspace` alongside whatever's already open, instead of
+    /// replacing it. See CodeWorkspaceFile.swift and ContentView's
+    /// addFolderToWorkspace(_:).
+    @Published var addFolderToWorkspaceRequested = false
 }

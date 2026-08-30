@@ -32,6 +32,15 @@ struct iPadVSCodeApp: App {
                     menuBridge.openFolderRequested = true
                 }
                 .keyboardShortcut("o", modifiers: .command)
+
+                // Multi-root workspace support: adds another Files/iCloud
+                // folder alongside whatever's already open (a
+                // .code-workspace file, not a straight ?folder= replace —
+                // see CodeWorkspaceFile.swift).
+                Button("Add Folder to Workspace…") {
+                    menuBridge.addFolderToWorkspaceRequested = true
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
             }
         }
     }

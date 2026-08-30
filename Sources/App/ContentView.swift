@@ -15,7 +15,13 @@ struct ContentView: View {
     @StateObject private var tunnel = TunnelController.shared
     @State private var webView = WKWebView()
     @State private var isPickingFolder = false
+    @State private var pickerMode: FolderPickerMode = .openAsPrimaryWorkspace
     @State private var folderPickerError: String?
+
+    private enum FolderPickerMode {
+        case openAsPrimaryWorkspace
+        case addToWorkspace
+    }
 
     var body: some View {
         ZStack {
@@ -28,7 +34,12 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isPickingFolder) {
             FolderPicker { url in
-                Task { await openFolder(url) }
+                switch pickerMode {
+                case .openAsPrimaryWorkspace:
+                    Task { await openFolder(url) }
+                case .addToWorkspace:
+                    Task { await addFolderToWorkspace(url) }
+                }
             }
         }
         .task {
@@ -39,8 +50,15 @@ struct ContentView: View {
         }
         .onChange(of: menuBridge.openFolderRequested) { _, requested in
             guard requested else { return }
+            pickerMode = .openAsPrimaryWorkspace
             isPickingFolder = true
             menuBridge.openFolderRequested = false
+        }
+        .onChange(of: menuBridge.addFolderToWorkspaceRequested) { _, requested in
+            guard requested else { return }
+            pickerMode = .addToWorkspace
+            isPickingFolder = true
+            menuBridge.addFolderToWorkspaceRequested = false
         }
         .onAppear(perform: applyMinimumWindowSize)
         .alert(
@@ -67,6 +85,50 @@ struct ContentView: View {
         } catch {
             folderPickerError = "\(error)"
         }
+    }
+
+    /// Multi-root workspace: authorizes the new folder the same way
+    /// openFolder() does, but instead of replacing the current `?folder=`,
+    /// appends it to a persisted `.code-workspace` file (CodeWorkspaceFile)
+    /// and navigates to `?workspace=<that file's path>` — code-server opens
+    /// any `.code-workspace`-extensioned path this way (confirmed from
+    /// source: `IS_WORKSPACE_FILE` in code-server's
+    /// src/node/routes/vscode.ts). If a folder was already open via
+    /// `?folder=`, it's carried into the workspace file too so switching to
+    /// multi-root doesn't drop it.
+    private func addFolderToWorkspace(_ url: URL) async {
+        guard let containerURL = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: RuntimeConfig.appGroupIdentifier)
+        else {
+            folderPickerError = "no App Group container"
+            return
+        }
+        do {
+            if let currentFolder = currentSingleFolderPath {
+                _ = CodeWorkspaceFile.addFolder(currentFolder, in: containerURL)
+            }
+            let resolvedPath = try await tunnel.authorizeWorkspace(url)
+            guard let workspaceFilePath = CodeWorkspaceFile.addFolder(resolvedPath, in: containerURL) else {
+                folderPickerError = "failed to write .code-workspace file"
+                return
+            }
+            var components = URLComponents(url: RuntimeConfig.loopbackURL, resolvingAgainstBaseURL: false)
+            components?.queryItems = [URLQueryItem(name: "workspace", value: workspaceFilePath)]
+            guard let workspaceURL = components?.url else { return }
+            webView.load(URLRequest(url: workspaceURL))
+        } catch {
+            folderPickerError = "\(error)"
+        }
+    }
+
+    /// Best-effort read of the currently-displayed `?folder=` query value
+    /// from the webview's own URL, so switching to multi-root doesn't
+    /// silently drop whatever single folder was already open.
+    private var currentSingleFolderPath: String? {
+        guard let url = webView.url,
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return nil }
+        return components.queryItems?.first(where: { $0.name == "folder" })?.value
     }
 
     private var startingOverlay: some View {
