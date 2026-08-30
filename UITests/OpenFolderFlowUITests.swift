@@ -13,21 +13,20 @@ final class OpenFolderFlowUITests: XCTestCase {
         XCTAssertTrue(openFolderButton.waitForExistence(timeout: 10), "Open Folder button should appear on first launch")
         openFolderButton.tap()
 
-        // UIDocumentPickerViewController is a system sheet; checking that
-        // *our* prompt got covered is unreliable (a background view
-        // controller can still report as accessibility-"existing" under a
-        // modal sheet even though it's not visible). Instead, check for a
-        // system element the picker itself is guaranteed to present: its
-        // Cancel button.
-        attachScreenshot(app, name: "after-tap-open-folder")
-        let pickerCancelButton = app.buttons["Cancel"]
-        XCTAssertTrue(pickerCancelButton.waitForExistence(timeout: 5), "the document picker's Cancel button should appear after tapping Open Folder…")
-    }
+        // Give the system sheet time to animate in before inspecting.
+        Thread.sleep(forTimeInterval: 2)
 
-    private func attachScreenshot(_ app: XCUIApplication, name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
-        attachment.name = name
-        attachment.lifetime = .keepAlways
-        add(attachment)
+        // Printed to the plain-text xcodebuild log (not just the binary
+        // .xcresult, which isn't inspectable outside macOS) so a failure
+        // here says exactly what's actually on screen instead of requiring
+        // a guess at which system element to assert on.
+        print("=== ACCESSIBILITY TREE AFTER TAPPING OPEN FOLDER ===")
+        print(app.debugDescription)
+        print("=== END ACCESSIBILITY TREE ===")
+
+        let pickerAppeared = app.buttons["Cancel"].exists
+            || app.navigationBars.buttons["Cancel"].exists
+            || app.otherElements["DOCMenuButtonCancel"].exists
+        XCTAssertTrue(pickerAppeared, "expected some form of document picker/cancel affordance to appear after tapping Open Folder… — see the accessibility tree dump above in the test log for what actually rendered")
     }
 }
