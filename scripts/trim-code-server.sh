@@ -109,6 +109,57 @@ done
 # Windows tooling compatibility, not a feature cut.
 find . -type d -name .bin -exec rm -rf {} +
 
+# nodejs-mobile's iOS build compiles with --with-intl=none (no V8 i18n
+# support at all), which also disables Unicode property escapes (\p{...})
+# in regular expressions -- not just locale-aware formatting; that's a
+# compile-time capability gate, unrelated to how much locale data is
+# bundled. path-to-regexp (used by code-server's own HTTP routing, via
+# `router`/`express`) uses \p{ID_Start}/\p{ID_Continue} to validate
+# identifier characters in route parameter names (e.g. the `id` in
+# `/users/:id`) -- confirmed as a real startup crash, not assumed
+# ("Invalid regular expression: ... Invalid property name in character
+# class"). Switching nodejs-mobile to full/small-icu was tried and
+# reverted: it exposed a separate, real bug in nodejs-mobile's own build
+# system (a build-time host tool gets cross-compiled as an iOS binary
+# instead of one that can run on the Mac doing the building) -- a deeper
+# fix worth doing later, tracked but not blocking this one.
+#
+# Replace the Unicode property classes with ASCII-only equivalents
+# everywhere they appear in the fetched payload (multiple build formats
+# may bundle their own copy). This means a route parameter name with a
+# non-ASCII character (e.g. `/users/:文件`) would no longer validate --
+# an exceedingly rare thing to name a route parameter, and code-server's
+# own routes don't do this, so this is a real but practically-inert
+# functionality cut, not a silent correctness risk.
+# Substitution done via node -e rather than sed: the exact number of
+# backslashes sed needs in its own pattern language to match a literal
+# `\p{ID_Start}` is easy to get subtly wrong (and was, in an earlier
+# revision of this script -- verified locally: it silently left a
+# dangling backslash behind, `[$_\a-zA-Z]`, which doesn't even parse as a
+# valid regex). Plain JS string replacement has no such ambiguity.
+node -e "
+  const fs = require('fs');
+  const path = require('path');
+  function walk(dir) {
+    for (const name of fs.readdirSync(dir)) {
+      const full = path.join(dir, name);
+      const stat = fs.lstatSync(full);
+      if (stat.isDirectory()) walk(full);
+      else if (stat.isFile()) {
+        const text = fs.readFileSync(full, 'utf8');
+        if (text.includes('\\\\p{ID_Start}') || text.includes('\\\\p{ID_Continue}')) {
+          const patched = text
+            .split('\\\\p{ID_Start}').join('a-zA-Z')
+            .split('\\\\p{ID_Continue}').join('0-9a-zA-Z_');
+          fs.writeFileSync(full, patched);
+          console.log('patched \\\\p{ID_Start}/\\\\p{ID_Continue} in ' + full);
+        }
+      }
+    }
+  }
+  walk('.');
+"
+
 echo "trim complete (node-pty, node_modules/.bin symlinks). remaining .node files (kept, for future cross-compile):"
 find . -name "*.node"
 echo "size: $(du -sh . | cut -f1)"
