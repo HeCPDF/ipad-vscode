@@ -20,9 +20,12 @@ Early skeleton. Current milestone is **"compiles via CI"**, tracked in `.github/
 - `project.yml` — [XcodeGen](https://github.com/yonaskolb/XcodeGen) spec; the `.xcodeproj` is generated in CI, not committed
 - `Resources` — static assets bundled into the app (placeholder for now)
 
+## Status detail
+
+`NodeMobile.xcframework` is linked and `node_start()` is called for real (confirmed API: a single C function, `int node_start(int argc, char *argv[])` — no Objective-C wrapper class). It currently runs a placeholder `server.js` that binds a bare `http` server on `127.0.0.1:8482`, not code-server yet.
+
 ## Not done yet
 
-- Linking `NodeMobile.xcframework` into the extension target and actually starting the Node engine (blocked on inspecting the framework's real API from its built headers, not guessing the symbol names)
-- code-server's web bundle + a loopback-only server config baked into the extension's bundled JS
+- Replacing the placeholder `server.js` with code-server's actual server entry point (Express app, extension host, `node-pty` removed/replaced, file system provider bridged to iOS Files/iCloud)
 - File System Provider bridging iOS Files/iCloud into the editor
 - `product.json` changes to bake in a fixed set of built-in extensions and drop the marketplace UI

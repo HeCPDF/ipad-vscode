@@ -52,6 +52,10 @@ targets:
     platform: iOS
     sources:
       - path: Sources/NodeRuntimeExtension
+        excludes:
+          - "Resources/**"
+    resources:
+      - path: Sources/NodeRuntimeExtension/Resources
     info:
       path: Sources/NodeRuntimeExtension/Info.plist
       properties:
