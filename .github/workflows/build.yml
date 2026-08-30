@@ -83,7 +83,7 @@ jobs:
           xcodebuild build \
             -project iPadVSCode.xcodeproj \
             -scheme iPadVSCode \
-            -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
+            -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' \
             -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO
           APP_PATH=$(find "$DERIVED_DATA/Build/Products" -maxdepth 2 -name 'iPadVSCode.app' | head -1)
@@ -120,7 +120,7 @@ jobs:
           xcodebuild test \
             -project iPadVSCode.xcodeproj \
             -scheme iPadVSCode \
-            -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
+            -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' \
             -resultBundlePath /tmp/uitest-results.xcresult \
             CODE_SIGNING_ALLOWED=NO
 
