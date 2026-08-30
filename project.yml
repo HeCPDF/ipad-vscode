@@ -56,7 +56,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hecpdf.ipadvscode
-        TARGETED_DEVICE_FAMILY: "1,2"
+        # iPad only ("2"); no iPhone ("1") support.
+        TARGETED_DEVICE_FAMILY: "2"
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
 
   iPadVSCodeUITests:

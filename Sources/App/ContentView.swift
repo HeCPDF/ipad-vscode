@@ -54,6 +54,16 @@ struct ContentView: View {
     /// width, the same way VSCode itself enforces a minimum window size on
     /// macOS. There's no SwiftUI-level API for this on iPadOS yet, so it's
     /// set directly on the underlying UIWindowScene.
+    ///
+    /// `sizeRestrictions` only governs the freeform/Stage-Manager-style
+    /// resizable window path — classic Split View (Stage Manager off) uses
+    /// system size classes it has always used and isn't gated by this API,
+    /// so this shouldn't affect Split View placement. Not verified against
+    /// an actual Stage-Manager-off device/simulator, though — no way to
+    /// toggle that setting in this pipeline. The app's own layout
+    /// (ZStack/VStack, no fixed-width assumptions) is written to reflow at
+    /// any width regardless, which is the part that actually matters for
+    /// working correctly in a narrow Split View pane.
     private func applyMinimumWindowSize() {
         guard let scene = UIApplication.shared.connectedScenes
             .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene

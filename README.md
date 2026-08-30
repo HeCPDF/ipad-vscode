@@ -12,6 +12,10 @@ Native iPadOS shell for the real, unmodified VSCode editor (not a web/limited-ex
 
 This is a **sideload-only** project: it deliberately uses a network-extension entitlement for a non-VPN purpose (to get independently-launchable background processes), which App Store review would reject.
 
+**Target: iPad running the latest iPadOS only** (currently 26, with 27 in beta) — no iPhone (`TARGETED_DEVICE_FAMILY: "2"`), no older-iPadOS compatibility shims. In exchange for the narrower device support, this leans on iPadOS 26's convergence with macOS: a real menu bar via SwiftUI `.commands {}` (`iPadVSCodeApp.swift`) — the same API macOS apps have always used for their menu bar, now also rendering as an actual iPadOS menu bar — and `UIWindowScene.sizeRestrictions` for a real minimum window size now that free window resizing is the default (`UIRequiresFullScreen` is deprecated/ignored as of iPadOS 26).
+
+iPadOS 26's windowing changes apply **regardless of whether Stage Manager is toggled on** — that's one of the actual headline changes (previously, resizable multi-window required opting into Stage Manager specifically). Nothing here is written to assume Stage Manager is on: `sizeRestrictions` only governs the freeform-resize path and shouldn't affect classic Split View (which uses its own system size classes), and the UI itself (ZStack/VStack, no fixed-width assumptions) is meant to reflow at any width. **Not verified against an actual Stage-Manager-off device or simulator state** — there's no way to toggle that setting in this pipeline; see "Status" for what is and isn't actually confirmed running.
+
 ## Status
 
 There are two distinct verification tiers in CI (`.github/workflows/build.yml`), and it matters which one a given claim rests on:
