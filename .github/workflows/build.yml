@@ -52,9 +52,37 @@ jobs:
           bash scripts/trim-code-server.sh /tmp/code-server-release/release
           mkdir -p Sources/NodeRuntimeExtension/Resources/code-server
           cp -R /tmp/code-server-release/release/. Sources/NodeRuntimeExtension/Resources/code-server/
+          echo "--- resources on disk before xcodegen generate ---"
+          ls -la Sources/NodeRuntimeExtension/Resources/
+          find Sources/NodeRuntimeExtension/Resources/code-server -maxdepth 1 | head -5
+          find Sources/NodeRuntimeExtension/Resources/code-server | wc -l
 
       - name: Generate Xcode project
         run: xcodegen generate
+
+      # A prior build had zero resource-copy activity for NodeRuntimeExtension
+      # at all — not even the tiny placeholder server.js — despite the files
+      # genuinely existing on disk at generate time (confirmed by the
+      # diagnostic in the step above). Dumping the generated pbxproj's
+      # PBXResourcesBuildPhase / file references directly shows whether
+      # XcodeGen actually wired resources: into the project, per the
+      # "makefile invisible? cat it in the workflow" debugging pattern used
+      # earlier for the sqlite3 gyp investigation.
+      - name: Diagnose generated project resources wiring
+        run: |
+          PBX=iPadVSCode.xcodeproj/project.pbxproj
+          echo "--- server.js / code-server references in pbxproj ---"
+          grep -n "server.js\|code-server" "$PBX" || echo "(no matches at all)"
+          echo "--- all PBXResourcesBuildPhase blocks (name + file count) ---"
+          python3 -c "
+          import re
+          text = open('$PBX').read()
+          for m in re.finditer(r'/\* (\w*) \*/ = \{\s*isa = PBXResourcesBuildPhase;.*?files = \((.*?)\);', text, re.S):
+              name, files = m.group(1), m.group(2)
+              count = files.count('/*')
+              print(name + ': ' + str(count) + ' file(s)')
+              print(files.strip()[:2000])
+          "
 
       - name: Build (no code signing, generic device)
         run: |
