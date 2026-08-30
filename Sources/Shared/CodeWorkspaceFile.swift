@@ -1,8 +1,8 @@
 import Foundation
 
-/// Writes/updates a `.code-workspace` file in the shared App Group
-/// container so multiple, independently-authorized Files/iCloud folders can
-/// be opened together as a real VSCode multi-root workspace — not just the
+/// Writes/updates a `.code-workspace` file in this app's private storage
+/// so multiple, independently-authorized Files/iCloud folders can be
+/// opened together as a real VSCode multi-root workspace — not just the
 /// single folder `?folder=` supports. Format confirmed from vscode source
 /// (`IStoredWorkspace` in `vs/platform/workspaces/common/workspaces.ts`):
 /// `{ folders: [{ path: string }, ...] }`. code-server opens it via

@@ -50,25 +50,25 @@ jobs:
           mkdir -p /tmp/code-server-release
           tar -xzf /tmp/code-server-pkg/package.tar.gz -C /tmp/code-server-release
           bash scripts/trim-code-server.sh /tmp/code-server-release/release
-          mkdir -p Sources/NodeRuntimeExtension/Resources/code-server
-          cp -R /tmp/code-server-release/release/. Sources/NodeRuntimeExtension/Resources/code-server/
+          mkdir -p Sources/App/Resources/code-server
+          cp -R /tmp/code-server-release/release/. Sources/App/Resources/code-server/
           echo "--- resources on disk before xcodegen generate ---"
-          ls -la Sources/NodeRuntimeExtension/Resources/
-          find Sources/NodeRuntimeExtension/Resources/code-server -maxdepth 1 | head -5
-          find Sources/NodeRuntimeExtension/Resources/code-server | wc -l
+          ls -la Sources/App/Resources/
+          find Sources/App/Resources/code-server -maxdepth 1 | head -5
+          find Sources/App/Resources/code-server | wc -l
 
       - name: Generate Xcode project
         run: xcodegen generate
 
-      # A prior build had zero resource-copy activity for NodeRuntimeExtension
-      # at all — not even the tiny placeholder server.js — despite the files
-      # genuinely existing on disk at generate time (confirmed by the
-      # diagnostic in the step above), and grepping the generated pbxproj's
-      # CI log text found zero occurrences of "server.js"/"code-server"
-      # anywhere. GitHub's log viewer virtualizes long step output, so
-      # reading it back through the browser was unreliable for confirming
-      # that grep result byte-for-byte — upload the raw pbxproj itself as an
-      # artifact instead, so it can be downloaded and inspected directly.
+      # Kept as a standing diagnostic (not just a one-off): a prior build
+      # had zero resource-copy activity for the app's code-server resources
+      # at all — not even the tiny placeholder server.js — despite the
+      # files genuinely existing on disk at generate time, traced back to
+      # XcodeGen's separate top-level `resources:` key silently not being
+      # wired into the generated project (see project.yml's comment on why
+      # `sources:` + `buildPhase: resources` is used instead). Uploading
+      # the raw pbxproj lets that class of bug be checked directly if it
+      # ever recurs, without fighting GitHub's log-viewer virtualization.
       - uses: actions/upload-artifact@v4
         with:
           name: generated-pbxproj
@@ -89,14 +89,16 @@ jobs:
       # reliably run the same resource-copy/embed-binary phases a real
       # distributable product needs — confirmed by a prior IPA produced
       # this way being ~375KB with no code-server payload or NodeMobile
-      # framework binaries inside the .appex bundles at all. `archive` is
-      # the actual product-export code path and does run them fully; it
-      # still works unsigned with CODE_SIGNING_ALLOWED=NO. No Apple
-      # Developer account or signing certificate is available in this
-      # pipeline either way, so the result can't be installed as-is — it's
-      # meant to be re-signed with the user's own certificate/provisioning
-      # profile (Sideloadly, AltStore/SideStore, or a manual
-      # `codesign`/zsign pass) before installing on a real iPad.
+      # framework binary at all. `archive` is the actual product-export
+      # code path and does run them fully; it still works unsigned with
+      # CODE_SIGNING_ALLOWED=NO. No Apple Developer account or signing
+      # certificate is available in this pipeline either way (also no
+      # longer needed for the app itself to run — see README.md — only
+      # for the sideload install step), so the result can't be installed
+      # as-is: it's meant to be re-signed with the user's own
+      # certificate/provisioning profile (Sideloadly, AltStore/SideStore,
+      # or a manual `codesign`/zsign pass) before installing on a real
+      # iPad.
       - name: Archive (unsigned) for a real, complete .app product
         id: archive
         run: |
@@ -114,7 +116,6 @@ jobs:
           APP_PATH=/tmp/iPadVSCode.xcarchive/Products/Applications/iPadVSCode.app
           echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
           du -sh "$APP_PATH"
-          find "$APP_PATH/PlugIns" -maxdepth 1
 
       # An IPA is just a zip of Payload/<App>.app — no special tooling
       # needed to produce one from the archived .app.
@@ -137,11 +138,11 @@ jobs:
       # build above — can actually be booted and launched right here in CI.
       # This is a real runtime smoke test, not just a compile check: it
       # proves the app launches and SwiftUI renders without crashing. It is
-      # NOT proof the NEPacketTunnelProvider extensions work — Apple's
-      # Network Extension framework has long-standing, well-known gaps in
-      # Simulator support, so NodeRuntimeExtension/ExtensionHostRuntime
-      # activating is not expected to be exercised by this test. See
-      # README.md for what this does and doesn't establish.
+      # NOT proof code-server's Node runtime actually starts and serves the
+      # editor — that needs a real device (no way to verify AVAudioSession
+      # background behavior or actually exercise node_start() end-to-end
+      # in this pipeline). See README.md for what this does and doesn't
+      # establish.
       - name: Build for Simulator
         id: sim_build
         run: |
@@ -177,10 +178,10 @@ jobs:
           path: artifacts
 
       # Actual UI automation (XCUITest), not just "launched and didn't
-      # crash": taps the real Open Folder button and confirms the system
-      # document picker sheet actually comes up. This is the one flow that
-      # doesn't depend on either NEPacketTunnelProvider extension, so
-      # Simulator's Network Extension gaps don't affect it.
+      # crash": triggers the Open Folder menu command and confirms the
+      # system document picker sheet actually comes up. This is the one
+      # flow that doesn't depend on code-server's Node runtime actually
+      # starting.
       - name: Run UI tests
         run: |
           xcodebuild test \

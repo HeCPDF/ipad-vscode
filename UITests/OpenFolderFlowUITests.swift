@@ -1,9 +1,9 @@
 import XCTest
 
 /// Runs in CI against the iOS Simulator (see .github/workflows/build.yml).
-/// Confirms the one UI flow that doesn't depend on either
-/// NEPacketTunnelProvider extension actually working — Simulator's
-/// Network Extension support gaps don't affect this test.
+/// Confirms the one UI flow that doesn't depend on code-server's Node
+/// runtime actually starting — code-server startup isn't exercised at all
+/// here (see README.md for why: a real device is needed for that).
 final class OpenFolderFlowUITests: XCTestCase {
     /// The editor no longer gates itself behind a folder being picked (it
     /// loads code-server's own welcome page immediately, matching real
@@ -18,9 +18,8 @@ final class OpenFolderFlowUITests: XCTestCase {
 
         // No specific element to wait on before the shortcut fires — the
         // WKWebView content (code-server's welcome page) isn't something
-        // XCUITest can see into, and the extensions serving it don't
-        // activate in Simulator anyway (see README.md). A fixed settle
-        // delay is the pragmatic choice here.
+        // XCUITest can see into. A fixed settle delay is the pragmatic
+        // choice here.
         Thread.sleep(forTimeInterval: 3)
         app.typeKey("o", modifierFlags: .command)
 

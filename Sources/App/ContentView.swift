@@ -8,11 +8,11 @@ import WebKit
 /// all. This view just loads the editor unconditionally once the Node
 /// runtime is up; "Open Folder…" (menu bar or in-editor) authorizes a
 /// folder at runtime and navigates to `?folder=<path>` — it doesn't gate
-/// startup. See PacketTunnelProvider.swift's handleAppMessage and
+/// startup. See NodeRuntimeController.swift's authorizeWorkspace and
 /// code-server's src/node/routes/vscode.ts (`req.query.folder`).
 struct ContentView: View {
     @EnvironmentObject private var menuBridge: MenuBridge
-    @StateObject private var tunnel = TunnelController.shared
+    @StateObject private var tunnel = NodeRuntimeController.shared
     @State private var webView = WKWebView()
     @State private var isPickingFolder = false
     @State private var pickerMode: FolderPickerMode = .openAsPrimaryWorkspace
@@ -97,12 +97,7 @@ struct ContentView: View {
     /// `?folder=`, it's carried into the workspace file too so switching to
     /// multi-root doesn't drop it.
     private func addFolderToWorkspace(_ url: URL) async {
-        guard let containerURL = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: RuntimeConfig.appGroupIdentifier)
-        else {
-            folderPickerError = "no App Group container"
-            return
-        }
+        let containerURL = RuntimeConfig.privateStorageURL
         do {
             if let currentFolder = currentSingleFolderPath {
                 _ = CodeWorkspaceFile.addFolder(currentFolder, in: containerURL)
@@ -174,8 +169,8 @@ struct ContentView: View {
 
 /// Wraps UIDocumentPickerViewController in folder-picking mode. The
 /// returned URL is security-scoped — passed to
-/// TunnelController.authorizeWorkspace(), which bookmarks it and has
-/// NodeRuntimeExtension authorize access in its own process.
+/// NodeRuntimeController.authorizeWorkspace(), which starts accessing it
+/// directly (same process, no cross-process hand-off needed anymore).
 private struct FolderPicker: UIViewControllerRepresentable {
     let onPick: (URL) -> Void
 

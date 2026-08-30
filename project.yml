@@ -19,14 +19,53 @@ settings:
     ENABLE_BITCODE: NO
 
 targets:
+  # code-server's server AND the real Node extension host both run in this
+  # single target now — no NEPacketTunnelProvider extensions. That
+  # architecture (see git history) needed
+  # com.apple.developer.networking.networkextension, which Apple restricts
+  # to paid Apple Developer Program accounts; a free/Personal Team signing
+  # identity gets denied at runtime (NEVPNErrorDomain Code=5, "permission
+  # denied") no matter what the entitlements file declares. Background
+  # persistence instead comes from UIBackgroundModes: audio (see
+  # AudioKeepAlive.swift) -- no special entitlement, works on a free
+  # account -- and the extension host is a worker_threads.Worker in the
+  # same process (see the code-server fork's
+  # patches/ios-exthost-no-fork.diff), since fork()/posix_spawn() is
+  # denied to third-party processes regardless of which process asks.
   iPadVSCode:
     type: application
     platform: iOS
+    # server.js and code-server are declared as `sources:` entries with an
+    # explicit `buildPhase: resources` override rather than under a
+    # separate top-level `resources:` key: the latter produced a generated
+    # project with literally zero PBXResourcesBuildPhase sections anywhere
+    # (verified by downloading the raw generated pbxproj as a CI artifact
+    # and grepping it directly — not just a log-rendering issue), for
+    # reasons that were not root-caused given no local Xcode/XcodeGen
+    # environment to reproduce against. buildPhase: resources on a sources
+    # entry is the same well-documented mechanism XcodeGen itself uses
+    # internally to route a source into Copy Bundle Resources instead of
+    # Compile Sources.
     sources:
       - path: Sources/App
+        excludes:
+          - "Resources/**"
       - path: Sources/Shared
-    resources:
-      - path: Resources
+      - path: Sources/App/Resources/server.js
+        buildPhase: resources
+      # Folder reference (not a group): code-server's build output is tens
+      # of thousands of files, and Xcode's per-file "Copy Bundle
+      # Resources" phase would be prohibitively slow / prone to CI
+      # timeouts at that count. A folder reference copies the directory
+      # as one unit instead.
+      - path: Sources/App/Resources/code-server
+        type: folder
+        optional: true
+        buildPhase: resources
+      # Tiny (~1s) silent PCM loop AVAudioPlayer plays on repeat to keep
+      # the app process alive in the background — see AudioKeepAlive.swift.
+      - path: Resources/silence.wav
+        buildPhase: resources
     info:
       path: Sources/App/Info.plist
       properties:
@@ -43,15 +82,16 @@ targets:
         UIRequiresFullScreen: false
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-    entitlements:
-      path: Sources/App/App.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - group.com.hecpdf.ipadvscode
+        # No paid-account entitlement needed — a plain Info.plist
+        # declaration, honored by iOS for any signing identity. Apple's
+        # App Store review rejects apps that declare this without a
+        # genuine audio purpose; irrelevant here since this is
+        # sideload-only, never submitted for review. See
+        # AudioKeepAlive.swift and README.md.
+        UIBackgroundModes:
+          - audio
     dependencies:
-      - target: NodeRuntimeExtension
-        embed: true
-      - target: ExtensionHostRuntime
+      - framework: Frameworks/NodeMobile.xcframework
         embed: true
     settings:
       base:
@@ -59,6 +99,7 @@ targets:
         # iPad only ("2"); no iPhone ("1") support.
         TARGETED_DEVICE_FAMILY: "2"
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/Frameworks"
 
   iPadVSCodeUITests:
     type: bundle.ui-testing
@@ -70,91 +111,3 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.hecpdf.ipadvscode.uitests
     dependencies:
       - target: iPadVSCode
-
-  NodeRuntimeExtension:
-    type: app-extension
-    platform: iOS
-    # server.js and code-server are declared as `sources:` entries with an
-    # explicit `buildPhase: resources` override rather than under a separate
-    # top-level `resources:` key: the latter produced a generated project
-    # with literally zero PBXResourcesBuildPhase sections anywhere (verified
-    # by downloading the raw generated pbxproj as a CI artifact and grepping
-    # it directly — not just a log-rendering issue), for reasons that were
-    # not root-caused given no local Xcode/XcodeGen environment to
-    # reproduce against. buildPhase: resources on a sources entry is the
-    # same well-documented mechanism XcodeGen itself uses internally to
-    # route a source into Copy Bundle Resources instead of Compile Sources.
-    sources:
-      - path: Sources/NodeRuntimeExtension
-        excludes:
-          - "Resources/**"
-      - path: Sources/Shared
-      - path: Sources/NodeRuntimeExtension/Resources/server.js
-        buildPhase: resources
-      # Folder reference (not a group): code-server's build output is tens of
-      # thousands of files, and Xcode's per-file "Copy Bundle Resources"
-      # phase would be prohibitively slow / prone to CI timeouts at that
-      # count. A folder reference copies the directory as one unit instead.
-      - path: Sources/NodeRuntimeExtension/Resources/code-server
-        type: folder
-        optional: true
-        buildPhase: resources
-    info:
-      path: Sources/NodeRuntimeExtension/Info.plist
-      properties:
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
-          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
-    entitlements:
-      path: Sources/NodeRuntimeExtension/NodeRuntimeExtension.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - group.com.hecpdf.ipadvscode
-        com.apple.developer.networking.networkextension:
-          - packet-tunnel-provider
-    dependencies:
-      - framework: Frameworks/NodeMobile.xcframework
-        embed: true
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.hecpdf.ipadvscode.noderuntime
-        SKIP_INSTALL: YES
-        FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/Frameworks"
-
-  # Second packet-tunnel-provider extension, launched by iPadVSCode alongside
-  # NodeRuntimeExtension purely so the real VSCode extension host (unmodified
-  # Node exthost, not the browser/web-worker one) has a process to run in.
-  # cp.fork() (vscode/src/vs/server/node/extensionHostConnection.ts) can't
-  # spawn it directly — iOS denies fork()/posix_spawn() to third-party
-  # processes outright — so the system launches this as an independent
-  # process instead, and it connects to the same Unix-domain-socket-backed
-  # named pipe (TMPDIR pointed at the shared App Group container) that
-  # bootstrap-fork.js would have connected to if it really had been forked.
-  # See extensionHostConnection.ts patch notes in README.md.
-  ExtensionHostRuntime:
-    type: app-extension
-    platform: iOS
-    sources:
-      - path: Sources/ExtensionHostRuntime
-      - path: Sources/Shared
-    info:
-      path: Sources/ExtensionHostRuntime/Info.plist
-      properties:
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
-          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ExtensionHostTunnelProvider
-    entitlements:
-      path: Sources/ExtensionHostRuntime/ExtensionHostRuntime.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - group.com.hecpdf.ipadvscode
-        com.apple.developer.networking.networkextension:
-          - packet-tunnel-provider
-    dependencies:
-      - framework: Frameworks/NodeMobile.xcframework
-        embed: true
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.hecpdf.ipadvscode.exthost
-        SKIP_INSTALL: YES
-        FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/Frameworks"

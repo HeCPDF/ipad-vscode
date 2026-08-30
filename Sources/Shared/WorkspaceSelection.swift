@@ -1,10 +1,10 @@
 import Foundation
 
-/// Where the App writes the user's chosen workspace folder for
-/// NodeRuntimeExtension to read before launching code-server. Written as a
-/// security-scoped bookmark (not a raw path) because the folder can live
-/// outside our sandbox (Files/iCloud Drive) — only a resolved bookmark
-/// grants access across process launches; a plain path does not.
+/// Where the App persists the user's chosen workspace folder across
+/// process restarts. Written as a security-scoped bookmark (not a raw
+/// path) because the folder can live outside our sandbox (Files/iCloud
+/// Drive) — only a resolved bookmark grants access across launches; a
+/// plain path does not.
 enum WorkspaceSelection {
     static let bookmarkFileName = "workspace-bookmark.data"
 
@@ -12,9 +12,9 @@ enum WorkspaceSelection {
     /// re-persisting it if the system handed back a stale bookmark. Must be
     /// paired with `startAccessingSecurityScopedResource()` /
     /// `stopAccessingSecurityScopedResource()` around actual file access —
-    /// callers are responsible for that (NodeRuntimeExtension's process
-    /// lifetime is the natural scope: start when node_start launches,
-    /// stop in stopTunnel).
+    /// callers are responsible for that (the app process's lifetime is the
+    /// natural scope: start when NodeRuntimeController launches the Node
+    /// runtime).
     static func resolveBookmark(in containerURL: URL) -> URL? {
         let bookmarkURL = containerURL.appendingPathComponent(bookmarkFileName)
         guard let data = try? Data(contentsOf: bookmarkURL) else { return nil }
