@@ -62,17 +62,20 @@ jobs:
         # -fexceptions directly onto this target's cflags_cc should win.
         run: |
           cd /tmp/sqlite3-src/sqlite3-module
+          # binding.gyp allows Python-style # comments, so it isn't strict
+          # JSON and json.load() can't parse it (confirmed by a prior
+          # attempt: "Expecting property name enclosed in double quotes").
+          # A targeted text insertion avoids needing a real GYP parser.
           python3 -c "
-          import json
           with open('binding.gyp') as f:
-              gyp = json.load(f)
-          for target in gyp['targets']:
-              if target.get('target_name') == 'vscode-sqlite3':
-                  target.setdefault('cflags_cc', []).append('-fexceptions')
+              content = f.read()
+          marker = '\"target_name\": \"vscode-sqlite3\",'
+          assert marker in content, 'target_name marker not found'
+          content = content.replace(marker, marker + '\n      \"cflags_cc\": [ \"-fexceptions\" ],', 1)
           with open('binding.gyp', 'w') as f:
-              json.dump(gyp, f, indent=2)
+              f.write(content)
           "
-          grep -A2 "cflags_cc" binding.gyp || true
+          grep -A1 "cflags_cc" binding.gyp || true
 
       - name: Install prebuild-for-nodejs-mobile locally, override its bundled nodejs-mobile-gyp
         # prebuild-for-nodejs-mobile@18.17.7 resolves nodejs-mobile-gyp via
