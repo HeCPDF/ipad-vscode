@@ -185,7 +185,15 @@ jobs:
           xcrun simctl spawn "$UDID" "${{ steps.sim_build.outputs.app_path }}/iPadVSCode" \
             > artifacts/spawn-stdout.txt 2> artifacts/spawn-stderr.txt &
           SPAWN_PID=$!
-          sleep 6
+          # A prior run's boot took ~4 minutes under CI load (vs. the
+          # usual ~1) -- a fixed short sleep risks killing this before the
+          # app even finishes initializing. Poll for the process actually
+          # exiting on its own (kill -0 fails once it has) instead of
+          # blindly waiting a fixed duration, up to a generous cap.
+          for i in $(seq 1 30); do
+            kill -0 "$SPAWN_PID" 2>/dev/null || break
+            sleep 1
+          done
           kill "$SPAWN_PID" 2>/dev/null || true
           wait "$SPAWN_PID" 2>/dev/null || true
           echo "--- spawn-stdout.txt ---"
