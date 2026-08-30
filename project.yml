@@ -74,13 +74,23 @@ targets:
   NodeRuntimeExtension:
     type: app-extension
     platform: iOS
+    # server.js and code-server are declared as `sources:` entries with an
+    # explicit `buildPhase: resources` override rather than under a separate
+    # top-level `resources:` key: the latter produced a generated project
+    # with literally zero PBXResourcesBuildPhase sections anywhere (verified
+    # by downloading the raw generated pbxproj as a CI artifact and grepping
+    # it directly — not just a log-rendering issue), for reasons that were
+    # not root-caused given no local Xcode/XcodeGen environment to
+    # reproduce against. buildPhase: resources on a sources entry is the
+    # same well-documented mechanism XcodeGen itself uses internally to
+    # route a source into Copy Bundle Resources instead of Compile Sources.
     sources:
       - path: Sources/NodeRuntimeExtension
         excludes:
           - "Resources/**"
       - path: Sources/Shared
-    resources:
       - path: Sources/NodeRuntimeExtension/Resources/server.js
+        buildPhase: resources
       # Folder reference (not a group): code-server's build output is tens of
       # thousands of files, and Xcode's per-file "Copy Bundle Resources"
       # phase would be prohibitively slow / prone to CI timeouts at that
@@ -88,6 +98,7 @@ targets:
       - path: Sources/NodeRuntimeExtension/Resources/code-server
         type: folder
         optional: true
+        buildPhase: resources
     info:
       path: Sources/NodeRuntimeExtension/Info.plist
       properties:
