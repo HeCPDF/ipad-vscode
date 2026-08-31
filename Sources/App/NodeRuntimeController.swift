@@ -46,6 +46,7 @@ final class NodeRuntimeController: ObservableObject {
         started = true
 
         redirectStderrToFile()
+        configureHomeEnvironment()
         AudioKeepAlive.shared.start()
         startNodeRuntime()
         // No IPC round trip to wait on anymore (everything is in-process) —
@@ -78,6 +79,58 @@ final class NodeRuntimeController: ObservableObject {
         }
         WorkspaceSelection.store(url: url, in: RuntimeConfig.privateStorageURL)
         return url.path
+    }
+
+    /// The actual, confirmed root cause of the real-device white-screen
+    /// crash (obtained from node-stdio.log after making it retrievable via
+    /// the Files app — see RuntimeConfig.diagnosticsURL/redirectStderrToFile
+    /// below), which is why the sysdiagnose showed nothing amfid/codesign/
+    /// JIT-related and why the crash reproduced identically with and
+    /// without --jitless: code-server's very first startup step is
+    /// `fs.mkdir(path.dirname(configPath), { recursive: true })` for
+    /// `~/.config/code-server/config.yaml` (readConfigFile in
+    /// src/node/cli.ts), and on a real device `os.homedir()`/`$HOME`
+    /// resolves to this app's own Data container *root*
+    /// (`/private/var/mobile/Containers/Data/Application/<uuid>/`) — which
+    /// the iOS sandbox does not allow creating new directories in directly;
+    /// only specific pre-existing subdirectories (Documents, Library, tmp)
+    /// are actually writable. The `mkdir` throws `EPERM`, uncaught, and
+    /// Node's default handler calls `process.exit(1)` — killing this whole
+    /// embedded-in-process host app in well under a second, before UIKit
+    /// renders a frame. (Simulator never hit this: Xcode's simulated
+    /// container root is a plain, permissive directory under the Mac's own
+    /// filesystem, not a real iOS sandbox boundary.)
+    ///
+    /// code-server derives its config/data/runtime paths from `xdg-basedir`
+    /// / `env-paths` (see the real, cloned source's `src/node/util.ts`
+    /// `getEnvPaths()`), which both honor the standard `XDG_*` environment
+    /// variables ahead of any home-directory-derived default — and other
+    /// code (cert generation, the extension host's own shell-environment
+    /// resolution, anything calling `os.homedir()` directly) falls back to
+    /// `$HOME` itself. Repointing both at somewhere actually writable
+    /// (inside `RuntimeConfig.privateStorageURL`, already proven writable —
+    /// the workspace bookmark lives there) fixes the whole class of "some
+    /// library wants to create a dotfile under the home directory" failures
+    /// in one place, rather than chasing down and passing a separate CLI
+    /// flag for every individual consumer (`--user-data-dir` alone would
+    /// have left `paths.config`'s own module-level `getEnvPaths()` call,
+    /// evaluated once at import time before any CLI flag is parsed,
+    /// pointed at the same broken path).
+    private func configureHomeEnvironment() {
+        let homeURL = RuntimeConfig.privateStorageURL.appendingPathComponent("home", isDirectory: true)
+        let subdirs = [".config", ".local/share", ".cache", ".xdg-runtime"]
+        try? FileManager.default.createDirectory(at: homeURL, withIntermediateDirectories: true)
+        for subdir in subdirs {
+            try? FileManager.default.createDirectory(
+                at: homeURL.appendingPathComponent(subdir, isDirectory: true),
+                withIntermediateDirectories: true
+            )
+        }
+        setenv("HOME", homeURL.path, 1)
+        setenv("XDG_CONFIG_HOME", homeURL.appendingPathComponent(".config").path, 1)
+        setenv("XDG_DATA_HOME", homeURL.appendingPathComponent(".local/share").path, 1)
+        setenv("XDG_CACHE_HOME", homeURL.appendingPathComponent(".cache").path, 1)
+        setenv("XDG_RUNTIME_DIR", homeURL.appendingPathComponent(".xdg-runtime").path, 1)
     }
 
     /// Node's own uncaught-exception handling prints to raw C stderr and
@@ -160,19 +213,17 @@ final class NodeRuntimeController: ObservableObject {
             // to a free/Personal Team signing identity) unless the
             // process is CS_DEBUGGED (a live debugger attached). V8's
             // default JIT compiles and then executes machine code from
-            // freshly-allocated pages, which needs exactly that. Confirmed
-            // as the real cause of a reported crash, not assumed: a
-            // normally-sideloaded build white-screens and is killed
-            // moments after launch on a real device, while the same build
-            // run indirectly inside LiveContainer (which arranges JIT
-            // access for its guest apps) works -- and CI's Simulator,
-            // which doesn't enforce this restriction on real iOS hardware
-            // at all, was never able to catch this since it isn't real
-            // codesigning enforcement. --jitless runs V8 in pure
-            // interpreter mode (no executable-page allocation at all), at
-            // a real performance cost, but works under a plain signing
-            // identity with no debugger attached and no special
-            // entitlement -- the actual sideload story for this app.
+            // freshly-allocated pages, which needs exactly that -- this
+            // part is still true and --jitless is still the right default
+            // for a plain sideload with no debugger attached. What is NOT
+            // true (originally assumed from a LiveContainer-vs-direct-
+            // sideload correlation, since corrected -- see README.md's
+            // "JIT: currently disabled" section): that this was ever what
+            // caused the reported white-screen crash. A real sysdiagnose
+            // showed no amfid/codesign/JIT involvement at all, and the
+            // crash reproduced identically with --jitless removed
+            // entirely -- the real cause was a separate, unrelated bug
+            // (see configureHomeEnvironment()'s doc comment above).
             "--jitless",
             "--max-old-space-size=256",
             entryScript,
