@@ -153,6 +153,27 @@ final class NodeRuntimeController: ObservableObject {
                 "--bind-addr", "127.0.0.1:\(RuntimeConfig.loopbackPort)",
                 "--disable-telemetry",
                 "--disable-update-check",
+                // vscode's own resolveShellEnv() (server-main.js) spawns a
+                // real shell (SHELL env var, falling back to os.userInfo()
+                // .shell, falling back to a hardcoded "sh") to capture the
+                // user's interactive-shell environment -- used by the
+                // extension host, the pty host (integrated terminal), and
+                // the agent host starter alike. iOS denies spawning
+                // arbitrary child processes to third-party apps outright
+                // (the same sandbox wall as cp.fork() elsewhere in this
+                // project), so that spawn always fails with ENOENT,
+                // confirmed via a real captured node-stdio.log: "Unable to
+                // resolve your shell environment: A system error occurred
+                // (spawn sh ENOENT)" -- which was taking the real extension
+                // host down with it ("Failed to start extension host
+                // process"), not just degrading gracefully.
+                // force-disable-user-env is vscode's own server CLI flag
+                // for skipping this step entirely (checked first, before
+                // any spawn is attempted) -- code-server has no dedicated
+                // flag for it, so pass it through via its existing
+                // --vscode-option escape hatch (parseVscodeOptions in
+                // src/node/cli.ts) rather than patching code-server itself.
+                "--vscode-option", "force-disable-user-env",
             ]
         }
 
