@@ -1,0 +1,132 @@
+name: Parse sysdiagnose
+
+# One-off diagnostic tool, not part of the main build: decodes a
+# macOS/iOS sysdiagnose archive's system_logs.logarchive using the real
+# `log show` CLI, which only exists on a real macOS host -- this repo's
+# CI runners are the only macOS machine available anywhere in this
+# project's pipeline (no local Mac/iPad -- see README.md), so this reuses
+# that rather than trying to parse Apple's binary unified-logging format
+# by hand.
+#
+# Investigating: on a real iOS 27/TXM device, a plain (no debugger
+# attached) cold launch of the sideloaded app white-screens and bounces
+# back to the home screen in well under a second, every time, with no
+# .ips crash report generated on-device at all -- inconsistent with the
+# app's own code actually running and crashing (that takes longer and
+# usually does produce a crash report; see README.md's "JIT: currently
+# disabled" section for the fuller picture). A live idevicesyslog capture
+# during a plain launch found nothing either. A sysdiagnose (which
+# captures kernel-level logging idevicesyslog doesn't see, including
+# amfid/code-signing trust evaluation) is the next real diagnostic level
+# up -- this workflow is how to actually read it.
+#
+# Usage: trigger with the archive_url input pointing at a fetchable
+# sysdiagnose .tar.gz/.zip (e.g. a GitHub issue-comment attachment URL,
+# which is how a local file becomes a URL a CI job can download). Narrow
+# the predicate/since/until inputs to keep the decoded output small
+# enough to actually read back (a full unfiltered sysdiagnose log can be
+# tens of millions of lines).
+
+on:
+  workflow_dispatch:
+    inputs:
+      archive_url:
+        description: "Direct URL to download the sysdiagnose archive from"
+        required: true
+      predicate:
+        description: "log show --predicate filter"
+        required: false
+        default: 'process == "iPadVSCode" OR process == "amfid" OR process == "installd" OR process == "launchd" OR subsystem CONTAINS "com.hecpdf.ipadvscode" OR eventMessage CONTAINS "ipadvscode"'
+      since:
+        description: "log show --start (e.g. '2026-08-31 22:55:00'); leave blank for no lower bound"
+        required: false
+        default: ""
+      until:
+        description: "log show --end (e.g. '2026-08-31 23:05:00'); leave blank for no upper bound"
+        required: false
+        default: ""
+
+jobs:
+  parse:
+    name: Decode system_logs.logarchive with log show
+    runs-on: macos-26
+    steps:
+      - name: Download archive
+        run: |
+          curl -fL -o /tmp/sysdiagnose.dl "${{ inputs.archive_url }}"
+          echo "--- downloaded file info ---"
+          file /tmp/sysdiagnose.dl
+          ls -la /tmp/sysdiagnose.dl
+
+      - name: Extract archive
+        run: |
+          mkdir -p /tmp/sysdiagnose_extracted
+          cd /tmp/sysdiagnose_extracted
+          FTYPE=$(file -b /tmp/sysdiagnose.dl)
+          echo "detected type: $FTYPE"
+          if echo "$FTYPE" | grep -qi zip; then
+            unzip -q /tmp/sysdiagnose.dl
+          elif echo "$FTYPE" | grep -qi gzip; then
+            tar -xzf /tmp/sysdiagnose.dl
+          elif echo "$FTYPE" | grep -qi "tar archive"; then
+            tar -xf /tmp/sysdiagnose.dl
+          else
+            echo "::error::unrecognized archive type, tried zip/tar.gz/tar: $FTYPE"
+            exit 1
+          fi
+          echo "--- extracted top-level contents ---"
+          find . -maxdepth 3
+
+      - name: Locate system_logs.logarchive
+        id: find_archive
+        run: |
+          ARCHIVE=$(find /tmp/sysdiagnose_extracted -type d -name "system_logs.logarchive" | head -1)
+          if [ -z "$ARCHIVE" ]; then
+            echo "::error::no system_logs.logarchive found in the extracted sysdiagnose -- dumping full tree for inspection"
+            find /tmp/sysdiagnose_extracted -maxdepth 5
+            exit 1
+          fi
+          echo "found: $ARCHIVE"
+          echo "archive_path=$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Decode with log show
+        run: |
+          mkdir -p artifacts
+          ARGS=(--archive "${{ steps.find_archive.outputs.archive_path }}" --info --debug --predicate "${{ inputs.predicate }}")
+          if [ -n "${{ inputs.since }}" ]; then
+            ARGS+=(--start "${{ inputs.since }}")
+          fi
+          if [ -n "${{ inputs.until }}" ]; then
+            ARGS+=(--end "${{ inputs.until }}")
+          fi
+          echo "log show ${ARGS[*]}"
+          log show "${ARGS[@]}" > artifacts/decoded-filtered.log 2>artifacts/decoded-filtered.stderr || true
+          wc -l artifacts/decoded-filtered.log
+          echo "--- first 200 lines ---"
+          head -n 200 artifacts/decoded-filtered.log
+          echo "--- stderr (if any) ---"
+          cat artifacts/decoded-filtered.stderr
+
+      # Also grab a completely unfiltered dump narrowed only by time (if
+      # given), for when the predicate above is wrong or too narrow and
+      # the real signal is in a process/subsystem not anticipated above.
+      # Capped hard on line count since an unfiltered sysdiagnose log can
+      # be enormous.
+      - name: Decode time-window-only (broader fallback)
+        if: inputs.since != '' || inputs.until != ''
+        run: |
+          ARGS=(--archive "${{ steps.find_archive.outputs.archive_path }}" --info --debug)
+          if [ -n "${{ inputs.since }}" ]; then
+            ARGS+=(--start "${{ inputs.since }}")
+          fi
+          if [ -n "${{ inputs.until }}" ]; then
+            ARGS+=(--end "${{ inputs.until }}")
+          fi
+          log show "${ARGS[@]}" 2>/dev/null | head -n 20000 > artifacts/decoded-timewindow-unfiltered.log || true
+          wc -l artifacts/decoded-timewindow-unfiltered.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: decoded-sysdiagnose-log
+          path: artifacts
