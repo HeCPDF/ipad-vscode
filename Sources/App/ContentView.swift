@@ -204,10 +204,67 @@ private struct EditorWebView: UIViewRepresentable {
     let webView: WKWebView
 
     func makeUIView(context: Context) -> WKWebView {
-        webView
+        webView.navigationDelegate = context.coordinator
+        return webView
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    /// ContentView's `.task` calls `webView.load(loopbackURL)` as soon as
+    /// `NodeRuntimeController.start()` returns — which, per that method's
+    /// own comment, marks `isRunning` once the background thread running
+    /// `node_start()` has merely been kicked off, not once code-server's
+    /// HTTP server is actually accepting connections (there's no readiness
+    /// signal to wait on; node_start() never returns). code-server has real
+    /// startup work to do first (parse args, write its config file, build
+    /// the Express app, register routes) before it calls `listen()`, so the
+    /// very first load races the server and, without this, would very
+    /// likely hit "Could not connect to server" with nothing retrying it.
+    /// Retry only the initial connection-refused/not-listening-yet window,
+    /// not every navigation failure -- once any load succeeds, later
+    /// user-driven navigations (Open Folder, Add Folder to Workspace) are
+    /// left alone so a real failure there surfaces normally instead of
+    /// silently reloading the workspace root.
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        private var retryCount = 0
+        private let maxRetries = 40
+        private let retryDelay: TimeInterval = 0.5
+        private var didLoadSuccessfully = false
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            didLoadSuccessfully = true
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            retryInitialLoad(in: webView, error: error)
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            retryInitialLoad(in: webView, error: error)
+        }
+
+        private func retryInitialLoad(in webView: WKWebView, error: Error) {
+            guard !didLoadSuccessfully, retryCount < maxRetries else { return }
+            let nsError = error as NSError
+            guard nsError.domain == NSURLErrorDomain else { return }
+            let retryableCodes: Set<Int> = [
+                NSURLErrorCannotConnectToHost,
+                NSURLErrorTimedOut,
+                NSURLErrorNetworkConnectionLost,
+                NSURLErrorCannotFindHost,
+            ]
+            guard retryableCodes.contains(nsError.code) else { return }
+            retryCount += 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay) { [weak webView] in
+                guard let webView, self.didLoadSuccessfully == false else { return }
+                webView.load(URLRequest(url: RuntimeConfig.loopbackURL))
+            }
+        }
+    }
 }
 
 #Preview {
