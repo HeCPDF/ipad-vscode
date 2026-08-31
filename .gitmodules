@@ -1,0 +1,6 @@
+[submodule "vendor/code-server"]
+	path = vendor/code-server
+	url = https://github.com/HeCPDF/code-server.git
+[submodule "vendor/nodejs-mobile"]
+	path = vendor/nodejs-mobile
+	url = https://github.com/HeCPDF/nodejs-mobile.git
