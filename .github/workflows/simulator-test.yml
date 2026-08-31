@@ -1,0 +1,139 @@
+name: Simulator Test
+
+# The Simulator boot/UI-test/log-capture portion of build.yml, factored
+# out into its own reusable workflow so it has exactly one definition
+# instead of two near-duplicates. Two ways it runs:
+#   - Called from build.yml's own `test` job (workflow_call, no `run_id`
+#     input) -- downloads the `simulator-test-build` artifact the `build`
+#     job in the SAME run already uploaded.
+#   - Invoked standalone (workflow_dispatch, `run_id` required) against
+#     ANY prior successful `build` job's artifact -- for reproducibility
+#     testing (does an intermittent failure, e.g. the app dying silently
+#     ~45-60s into UI test interaction with no crash report, repeat on
+#     the exact same already-built binary?) or iterating on this test
+#     script itself, without paying the ~5 minutes of
+#     checkout/xcodegen/compile build.yml's own `build` job needs on every
+#     attempt. Only works against a `build` job run after the commit that
+#     introduced the `simulator-test-build` artifact; older runs won't
+#     have it.
+
+on:
+  workflow_call:
+    inputs:
+      run_id:
+        type: string
+        required: false
+        default: ""
+      repeat:
+        type: string
+        required: false
+        default: "1"
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "ipad-vscode Build workflow run ID to pull the simulator-test-build artifact from (must postdate this workflow's introduction)"
+        required: true
+      repeat:
+        description: "How many times to repeat install+launch+UI-test in a row (for reproducibility testing)"
+        required: false
+        default: "1"
+
+jobs:
+  test:
+    name: Boot Simulator + run UI tests
+    runs-on: macos-26
+    steps:
+      - name: Runner memory/CPU
+        run: |
+          sysctl hw.memsize hw.ncpu hw.physicalcpu
+          vm_stat
+
+      # No checkout, no xcodegen, no compile -- the whole point of this
+      # workflow existing separately is to skip all of that and reuse
+      # what the `build` job already produced.
+      - name: Download simulator-test-build artifact (same run)
+        if: inputs.run_id == ''
+        uses: actions/download-artifact@v4
+        with:
+          name: simulator-test-build
+          path: /tmp/derived-sim/Build/Products
+
+      - name: Download simulator-test-build artifact (cross-run)
+        if: inputs.run_id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/derived-sim/Build/Products
+          gh run download "${{ inputs.run_id }}" --repo ${{ github.repository }} --name simulator-test-build --dir /tmp/derived-sim/Build/Products
+
+      - name: Resolve app/xctestrun paths
+        run: |
+          APP_PATH=$(find /tmp/derived-sim/Build/Products -maxdepth 2 -name 'iPadVSCode.app' | head -1)
+          XCTESTRUN=$(find /tmp/derived-sim/Build/Products -maxdepth 1 -name '*.xctestrun' | head -1)
+          if [ -z "$APP_PATH" ] || [ -z "$XCTESTRUN" ]; then
+            echo "::error::could not find iPadVSCode.app and/or *.xctestrun under /tmp/derived-sim/Build/Products -- was the artifact from a build job old enough to predate build-for-testing?"
+            find /tmp/derived-sim -maxdepth 3
+            exit 1
+          fi
+          echo "resolved app_path=$APP_PATH"
+          echo "resolved xctestrun=$XCTESTRUN"
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+          echo "XCTESTRUN=$XCTESTRUN" >> "$GITHUB_ENV"
+
+      - name: Boot Simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j \
+            | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for rt in d.values() for x in rt if 'iPad Pro' in x['name']))")
+          echo "using simulator $UDID"
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+
+      # Each iteration: fresh install (uninstall first so no state carries
+      # over from a prior iteration), launch + screenshot + log capture
+      # (mirrors build.yml's "Boot Simulator, install, launch,
+      # screenshot"), then the UI test itself via test-without-building
+      # (no recompiling), then a post-test log re-capture (mirrors
+      # build.yml's "Capture node-stdio.log after UI tests") since a
+      # silent mid-test exit needs its own capture, not just the
+      # pre-test one. Never let one iteration's failure stop the loop --
+      # the whole point of repeating is to see which iterations fail and
+      # which don't.
+      - name: Repeat install + launch + UI test + log capture
+        run: |
+          mkdir -p artifacts
+          for i in $(seq 1 "${{ inputs.repeat }}"); do
+            echo "::group::Iteration $i"
+            xcrun simctl uninstall "$SIM_UDID" com.hecpdf.ipadvscode || true
+            xcrun simctl install "$SIM_UDID" "$APP_PATH"
+            sleep 2
+
+            xcrun simctl launch "$SIM_UDID" com.hecpdf.ipadvscode \
+              || echo "::warning::simctl launch failed on iteration $i -- continuing for diagnostics"
+            sleep 8
+            xcrun simctl io "$SIM_UDID" screenshot "artifacts/launch-$i.png" || true
+            xcrun simctl spawn "$SIM_UDID" log show --predicate 'subsystem CONTAINS "com.hecpdf.ipadvscode"' --last 1m > "artifacts/simulator-log-$i-pre-uitest.txt" || true
+
+            CONTAINER=$(xcrun simctl get_app_container "$SIM_UDID" com.hecpdf.ipadvscode data 2>/dev/null || true)
+            NODE_LOG="$CONTAINER/Library/Application Support/iPadVSCode/node-stdio.log"
+            cp "$NODE_LOG" "artifacts/node-stdio-$i-pre-uitest.log" 2>/dev/null || echo "(no node-stdio.log yet for iteration $i)"
+
+            xcodebuild test-without-building \
+              -xctestrun "$XCTESTRUN" \
+              -destination "platform=iOS Simulator,id=$SIM_UDID" \
+              -resultBundlePath "/tmp/uitest-results-$i.xcresult" \
+              || echo "::warning::UI test failed on iteration $i"
+            [ -d "/tmp/uitest-results-$i.xcresult" ] && cp -R "/tmp/uitest-results-$i.xcresult" "artifacts/uitest-results-$i.xcresult" || true
+
+            CONTAINER=$(xcrun simctl get_app_container "$SIM_UDID" com.hecpdf.ipadvscode data 2>/dev/null || true)
+            NODE_LOG="$CONTAINER/Library/Application Support/iPadVSCode/node-stdio.log"
+            cp "$NODE_LOG" "artifacts/node-stdio-$i-post-uitest.log" 2>/dev/null || echo "(no node-stdio.log for iteration $i)"
+            xcrun simctl spawn "$SIM_UDID" log show --predicate 'subsystem CONTAINS "com.hecpdf.ipadvscode"' --last 5m > "artifacts/simulator-log-$i-post-uitest.txt" || true
+            echo "::endgroup::"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-test-results
+          path: artifacts

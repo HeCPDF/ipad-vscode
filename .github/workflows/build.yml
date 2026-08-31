@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: Compile + Simulator smoke test + UI tests
+    name: Compile + package (device IPA + Simulator test build)
     # Needs the iOS/iPadOS 26 SDK (project.yml's deploymentTarget), which
     # only ships with Xcode 26+ — not present on macos-15.
     runs-on: macos-26
@@ -18,6 +18,18 @@ jobs:
 
       - name: Xcode version
         run: xcodebuild -version
+
+      # Answers a real, previously-unverified question rather than
+      # assuming a number: GitHub-hosted macOS runner memory has changed
+      # across labels/generations over time, and guessing it risks being
+      # stale. Directly relevant to whether the app dying silently ~45-60s
+      # into UI test interaction (no crash report generated -- see git
+      # history) could be memory pressure on the runner itself, not just
+      # the Simulator/app.
+      - name: Runner memory/CPU
+        run: |
+          sysctl hw.memsize hw.ncpu hw.physicalcpu
+          vm_stat
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -138,118 +150,34 @@ jobs:
       # build above — can actually be booted and launched right here in CI.
       # This is a real runtime smoke test, not just a compile check: it
       # proves the app launches and SwiftUI renders without crashing. It is
-      # NOT proof code-server's Node runtime actually starts and serves the
-      # editor — that needs a real device (no way to verify AVAudioSession
-      # background behavior or actually exercise node_start() end-to-end
-      # in this pipeline). See README.md for what this does and doesn't
-      # establish.
-      - name: Build for Simulator
-        id: sim_build
+      # NOT proof code-server's Node runtime behaves identically to a real
+      # device: Simulator doesn't enforce real iOS codesigning restrictions
+      # (e.g. the JIT/dynamic-codesigning entitlement V8 needs to actually
+      # execute compiled code, confirmed as a real cause of a device-only
+      # crash — see NodeRuntimeController.swift's --jitless comment) the
+      # same way real hardware does, so this job's Simulator run can pass
+      # while a real device still doesn't. See README.md.
+      #
+      # build-for-testing (not a plain `build`) so this produces both the
+      # app AND the compiled UI test bundle + .xctestrun in one pass --
+      # everything the `test` job below (and simulator-test.yml re-run
+      # standalone against an older build) needs, without recompiling.
+      - name: Build for Simulator (app + UI test bundle)
         run: |
           DERIVED_DATA=/tmp/derived-sim
-          xcodebuild build \
+          xcodebuild build-for-testing \
             -project iPadVSCode.xcodeproj \
             -scheme iPadVSCode \
             -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' \
             -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO
-          APP_PATH=$(find "$DERIVED_DATA/Build/Products" -maxdepth 2 -name 'iPadVSCode.app' | head -1)
-          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
-
-      # `simctl launch` alone doesn't capture the process's actual
-      # stdout/stderr (unified logging via the subsystem predicate below
-      # only sees os_log/NSLog calls, not raw console output) -- and
-      # that's exactly where Node prints an uncaught exception's message
-      # before calling exit(1). Ruled out for getting that output, both
-      # confirmed with real repro, not assumed: `simctl launch
-      # --stdout=.../--stderr=...` (with or without
-      # --terminate-running-process) gets the launch itself denied
-      # (FBSOpenApplicationServiceErrorDomain / SBMainWorkspace) on this
-      # Xcode/simctl version; `simctl spawn` on the app's own binary runs
-      # but never reaches ContentView's `.task` at all (30s, zero output)
-      # since it bypasses SpringBoard's real scene-connection handshake.
-      # NodeRuntimeController.redirectStderrToFile() instead redirects the
-      # C-level stdio streams to a file inside the app's own sandbox
-      # before calling node_start() -- that file is a real one on disk, so
-      # it survives the process exiting, and can be pulled out afterward
-      # via `simctl get_app_container` regardless of what simctl launch
-      # itself will or won't capture live.
-      - name: Boot Simulator, install, launch, screenshot
-        run: |
-          set -e
-          UDID=$(xcrun simctl list devices available -j \
-            | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for rt in d.values() for x in rt if 'iPad Pro' in x['name']))")
-          echo "using simulator $UDID"
-          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
-          xcrun simctl boot "$UDID" || true
-          xcrun simctl bootstatus "$UDID" -b
-          xcrun simctl install "$UDID" "${{ steps.sim_build.outputs.app_path }}"
-          mkdir -p artifacts
-          sleep 2
-
-          xcrun simctl launch "$UDID" com.hecpdf.ipadvscode \
-            || echo "::warning::simctl launch failed (see log above) -- continuing for the screenshot/log diagnostics"
-          sleep 8
-          xcrun simctl io "$UDID" screenshot artifacts/simulator-launch.png || true
-          xcrun simctl spawn "$UDID" log show --predicate 'subsystem CONTAINS "com.hecpdf.ipadvscode"' --last 1m > artifacts/simulator-log.txt || true
-
-          CONTAINER=$(xcrun simctl get_app_container "$UDID" com.hecpdf.ipadvscode data 2>/dev/null || true)
-          echo "app data container: $CONTAINER"
-          NODE_LOG="$CONTAINER/Library/Application Support/iPadVSCode/node-stdio.log"
-          echo "--- node-stdio.log ---"
-          cat "$NODE_LOG" 2>/dev/null || echo "(none -- not found at $NODE_LOG)"
-          cp "$NODE_LOG" artifacts/node-stdio.log 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: simulator-smoke-test
-          path: artifacts
+          name: simulator-test-build
+          path: /tmp/derived-sim/Build/Products
 
-      # Actual UI automation (XCUITest), not just "launched and didn't
-      # crash": triggers the Open Folder menu command and confirms the
-      # system document picker sheet actually comes up. This is the one
-      # flow that doesn't depend on code-server's Node runtime actually
-      # starting.
-      - name: Run UI tests
-        run: |
-          xcodebuild test \
-            -project iPadVSCode.xcodeproj \
-            -scheme iPadVSCode \
-            -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' \
-            -resultBundlePath /tmp/uitest-results.xcresult \
-            CODE_SIGNING_ALLOWED=NO
-
-      - name: Export UI test result bundle
-        if: always()
-        run: |
-          mkdir -p artifacts
-          [ -d /tmp/uitest-results.xcresult ] && cp -R /tmp/uitest-results.xcresult artifacts/ || true
-
-      # A real UI test failure was seen ("Application ... is not running",
-      # ~60s into the test's own app session -- well past the point the
-      # earlier smoke-test screenshot/log capture above already confirmed
-      # healthy) with no way to tell why: that earlier capture only covers
-      # the smoke test's own short-lived launch, not the separate,
-      # longer-running app session xcodebuild test launches and drives.
-      # Re-capture node-stdio.log from the app's container again here,
-      # after the UI test run, so a crash/exit during the UI test's own
-      # interaction (not just at cold launch) is actually visible instead
-      # of silently lost.
-      - name: Capture node-stdio.log after UI tests
-        if: always()
-        run: |
-          mkdir -p artifacts
-          CONTAINER=$(xcrun simctl get_app_container "$SIM_UDID" com.hecpdf.ipadvscode data 2>/dev/null || true)
-          echo "app data container (post-UI-tests): $CONTAINER"
-          NODE_LOG="$CONTAINER/Library/Application Support/iPadVSCode/node-stdio.log"
-          echo "--- node-stdio.log (post-UI-tests) ---"
-          cat "$NODE_LOG" 2>/dev/null || echo "(none -- not found at $NODE_LOG)"
-          cp "$NODE_LOG" artifacts/node-stdio-post-uitests.log 2>/dev/null || true
-          xcrun simctl spawn "$SIM_UDID" log show --predicate 'subsystem CONTAINS "com.hecpdf.ipadvscode"' --last 5m > artifacts/simulator-log-post-uitests.txt || true
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ui-test-results
-          path: artifacts
+  test:
+    name: Simulator smoke test + UI tests
+    needs: build
+    uses: ./.github/workflows/simulator-test.yml
