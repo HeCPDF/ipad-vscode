@@ -20,19 +20,32 @@ name: Parse sysdiagnose
 # amfid/code-signing trust evaluation) is the next real diagnostic level
 # up -- this workflow is how to actually read it.
 #
-# Usage: trigger with the archive_url input pointing at a fetchable
-# sysdiagnose .tar.gz/.zip (e.g. a GitHub issue-comment attachment URL,
-# which is how a local file becomes a URL a CI job can download). Narrow
-# the predicate/since/until inputs to keep the decoded output small
-# enough to actually read back (a full unfiltered sysdiagnose log can be
-# tens of millions of lines).
+# Usage: the sysdiagnose lives as a release asset on the private
+# HeCPDF/ipad-vscode-diagnostics repo (kept out of this public repo
+# deliberately -- a sysdiagnose contains real device-identifying data).
+# Trigger with diag_repo/tag/asset_pattern pointing at that release;
+# downloaded via `gh release download` with CROSS_REPO_PAT (the same
+# secret build.yml already uses for cross-repo fetches from the
+# nodejs-mobile/code-server forks), since a private repo's release
+# assets aren't fetchable with a plain unauthenticated curl the way a
+# public repo's are. Narrow the predicate/since/until inputs to keep the
+# decoded output small enough to actually read back (a full unfiltered
+# sysdiagnose log can be tens of millions of lines).
 
 on:
   workflow_dispatch:
     inputs:
-      archive_url:
-        description: "Direct URL to download the sysdiagnose archive from"
+      diag_repo:
+        description: "owner/repo of the private diagnostics repo holding the release"
+        required: false
+        default: "HeCPDF/ipad-vscode-diagnostics"
+      tag:
+        description: "Release tag to download the sysdiagnose asset from"
         required: true
+      asset_pattern:
+        description: "gh release download --pattern glob for the archive asset"
+        required: false
+        default: "*.zip"
       predicate:
         description: "log show --predicate filter"
         required: false
@@ -52,8 +65,20 @@ jobs:
     runs-on: macos-26
     steps:
       - name: Download archive
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
         run: |
-          curl -fL -o /tmp/sysdiagnose.dl "${{ inputs.archive_url }}"
+          mkdir -p /tmp/sysdiagnose_dl
+          gh release download "${{ inputs.tag }}" \
+            --repo "${{ inputs.diag_repo }}" \
+            --pattern "${{ inputs.asset_pattern }}" \
+            --dir /tmp/sysdiagnose_dl
+          FOUND=$(find /tmp/sysdiagnose_dl -type f | head -1)
+          if [ -z "$FOUND" ]; then
+            echo "::error::gh release download completed but no file matched pattern '${{ inputs.asset_pattern }}' on tag '${{ inputs.tag }}'"
+            exit 1
+          fi
+          mv "$FOUND" /tmp/sysdiagnose.dl
           echo "--- downloaded file info ---"
           file /tmp/sysdiagnose.dl
           ls -la /tmp/sysdiagnose.dl
