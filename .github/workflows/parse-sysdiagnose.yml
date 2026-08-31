@@ -67,15 +67,18 @@ jobs:
       - name: Download archive
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+          TAG: ${{ inputs.tag }}
+          DIAG_REPO: ${{ inputs.diag_repo }}
+          ASSET_PATTERN: ${{ inputs.asset_pattern }}
         run: |
           mkdir -p /tmp/sysdiagnose_dl
-          gh release download "${{ inputs.tag }}" \
-            --repo "${{ inputs.diag_repo }}" \
-            --pattern "${{ inputs.asset_pattern }}" \
+          gh release download "$TAG" \
+            --repo "$DIAG_REPO" \
+            --pattern "$ASSET_PATTERN" \
             --dir /tmp/sysdiagnose_dl
           FOUND=$(find /tmp/sysdiagnose_dl -type f | head -1)
           if [ -z "$FOUND" ]; then
-            echo "::error::gh release download completed but no file matched pattern '${{ inputs.asset_pattern }}' on tag '${{ inputs.tag }}'"
+            echo "::error::gh release download completed but no file matched pattern '$ASSET_PATTERN' on tag '$TAG'"
             exit 1
           fi
           mv "$FOUND" /tmp/sysdiagnose.dl
@@ -114,15 +117,32 @@ jobs:
           echo "found: $ARCHIVE"
           echo "archive_path=$ARCHIVE" >> "$GITHUB_OUTPUT"
 
+      # Every ${{ inputs.* }}/${{ steps.* }} value used below is passed in
+      # via `env:` and referenced as a real shell variable ("$PREDICATE"
+      # etc.), never interpolated directly into the script body. GitHub
+      # Actions expands ${{ }} as a textual substitution *before* bash
+      # parses quoting -- a predicate value containing literal `"`
+      # characters (this one does) breaks out of the surrounding bash
+      # quotes and corrupts the whole argument list. Confirmed as a real
+      # failure, not a hypothetical: an earlier revision of this step did
+      # exactly that and log show received `--predicate process` (a
+      # single bareword) with the rest of the predicate scattered as
+      # separate positional arguments, producing zero matched lines and a
+      # page of "no such field" errors instead of any real content.
       - name: Decode with log show
+        env:
+          ARCHIVE_PATH: ${{ steps.find_archive.outputs.archive_path }}
+          PREDICATE: ${{ inputs.predicate }}
+          SINCE: ${{ inputs.since }}
+          UNTIL: ${{ inputs.until }}
         run: |
           mkdir -p artifacts
-          ARGS=(--archive "${{ steps.find_archive.outputs.archive_path }}" --info --debug --predicate "${{ inputs.predicate }}")
-          if [ -n "${{ inputs.since }}" ]; then
-            ARGS+=(--start "${{ inputs.since }}")
+          ARGS=(--archive "$ARCHIVE_PATH" --info --debug --predicate "$PREDICATE")
+          if [ -n "$SINCE" ]; then
+            ARGS+=(--start "$SINCE")
           fi
-          if [ -n "${{ inputs.until }}" ]; then
-            ARGS+=(--end "${{ inputs.until }}")
+          if [ -n "$UNTIL" ]; then
+            ARGS+=(--end "$UNTIL")
           fi
           echo "log show ${ARGS[*]}"
           log show "${ARGS[@]}" > artifacts/decoded-filtered.log 2>artifacts/decoded-filtered.stderr || true
@@ -139,13 +159,17 @@ jobs:
       # be enormous.
       - name: Decode time-window-only (broader fallback)
         if: inputs.since != '' || inputs.until != ''
+        env:
+          ARCHIVE_PATH: ${{ steps.find_archive.outputs.archive_path }}
+          SINCE: ${{ inputs.since }}
+          UNTIL: ${{ inputs.until }}
         run: |
-          ARGS=(--archive "${{ steps.find_archive.outputs.archive_path }}" --info --debug)
-          if [ -n "${{ inputs.since }}" ]; then
-            ARGS+=(--start "${{ inputs.since }}")
+          ARGS=(--archive "$ARCHIVE_PATH" --info --debug)
+          if [ -n "$SINCE" ]; then
+            ARGS+=(--start "$SINCE")
           fi
-          if [ -n "${{ inputs.until }}" ]; then
-            ARGS+=(--end "${{ inputs.until }}")
+          if [ -n "$UNTIL" ]; then
+            ARGS+=(--end "$UNTIL")
           fi
           log show "${ARGS[@]}" 2>/dev/null | head -n 20000 > artifacts/decoded-timewindow-unfiltered.log || true
           wc -l artifacts/decoded-timewindow-unfiltered.log
