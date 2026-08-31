@@ -180,6 +180,7 @@ jobs:
           UDID=$(xcrun simctl list devices available -j \
             | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for rt in d.values() for x in rt if 'iPad Pro' in x['name']))")
           echo "using simulator $UDID"
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
           xcrun simctl install "$UDID" "${{ steps.sim_build.outputs.app_path }}"
@@ -225,8 +226,30 @@ jobs:
           mkdir -p artifacts
           [ -d /tmp/uitest-results.xcresult ] && cp -R /tmp/uitest-results.xcresult artifacts/ || true
 
+      # A real UI test failure was seen ("Application ... is not running",
+      # ~60s into the test's own app session -- well past the point the
+      # earlier smoke-test screenshot/log capture above already confirmed
+      # healthy) with no way to tell why: that earlier capture only covers
+      # the smoke test's own short-lived launch, not the separate,
+      # longer-running app session xcodebuild test launches and drives.
+      # Re-capture node-stdio.log from the app's container again here,
+      # after the UI test run, so a crash/exit during the UI test's own
+      # interaction (not just at cold launch) is actually visible instead
+      # of silently lost.
+      - name: Capture node-stdio.log after UI tests
+        if: always()
+        run: |
+          mkdir -p artifacts
+          CONTAINER=$(xcrun simctl get_app_container "$SIM_UDID" com.hecpdf.ipadvscode data 2>/dev/null || true)
+          echo "app data container (post-UI-tests): $CONTAINER"
+          NODE_LOG="$CONTAINER/Library/Application Support/iPadVSCode/node-stdio.log"
+          echo "--- node-stdio.log (post-UI-tests) ---"
+          cat "$NODE_LOG" 2>/dev/null || echo "(none -- not found at $NODE_LOG)"
+          cp "$NODE_LOG" artifacts/node-stdio-post-uitests.log 2>/dev/null || true
+          xcrun simctl spawn "$SIM_UDID" log show --predicate 'subsystem CONTAINS "com.hecpdf.ipadvscode"' --last 5m > artifacts/simulator-log-post-uitests.txt || true
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: ui-test-results
-          path: artifacts/uitest-results.xcresult
+          path: artifacts
