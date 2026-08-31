@@ -205,6 +205,49 @@ node -e "
   walk('.');
 "
 
+# vscode's own server bundle (lib/vscode/out/server-main.js) computes its
+# NLS (locale) metadata directory as `import.meta.dirname` -- an ESM
+# property added in Node 20.11/21.2. nodejs-mobile's embedded Node
+# predates that, so the property access silently evaluates to `undefined`
+# (an unknown property on an object literal, not a syntax/parse error --
+# unlike the \p{...} regex crashes above, this one only surfaces at
+# runtime). Confirmed as a real crash via NodeRuntimeController's
+# captured stdio log, one step further into startup than the \p{L} fix
+# above got: "The \"path\" argument must be of type string. Received
+# type undefined", thrown from server-main.js's own bundled path.join()
+# polyfill, called as `join(nlsMetadataPath, "nls.messages.json")` with
+# nlsMetadataPath === undefined.
+#
+# Replace `import.meta.dirname` with `new URL(".",import.meta.url).pathname`
+# everywhere it appears -- the standard, long-supported ESM way to get a
+# module's own directory, computing the same value `import.meta.dirname`
+# would (modulo a trailing slash, which path.join() normalizes away; this
+# is only ever used to build a path via join(), never compared as a bare
+# string, so that difference doesn't matter here). `import.meta.url` is
+# core ESM, not a new-Node-version feature, so this works regardless of
+# which Node version is actually embedded.
+node -e "
+  const fs = require('fs');
+  const path = require('path');
+  const FROM = 'import.meta.dirname';
+  const TO = 'new URL(\".\",import.meta.url).pathname';
+  function walk(dir) {
+    for (const name of fs.readdirSync(dir)) {
+      const full = path.join(dir, name);
+      const stat = fs.lstatSync(full);
+      if (stat.isDirectory()) walk(full);
+      else if (stat.isFile()) {
+        const text = fs.readFileSync(full, 'utf8');
+        if (text.includes(FROM)) {
+          fs.writeFileSync(full, text.split(FROM).join(TO));
+          console.log('patched import.meta.dirname in ' + full);
+        }
+      }
+    }
+  }
+  walk('.');
+"
+
 echo "trim complete (node-pty, node_modules/.bin symlinks). remaining .node files (kept, for future cross-compile):"
 find . -name "*.node"
 echo "size: $(du -sh . | cut -f1)"
