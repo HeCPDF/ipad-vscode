@@ -124,35 +124,80 @@ find . -type d -name .bin -exec rm -rf {} +
 # instead of one that can run on the Mac doing the building) -- a deeper
 # fix worth doing later, tracked but not blocking this one.
 #
-# Replace the Unicode property classes with ASCII-only equivalents
-# everywhere they appear in the fetched payload (multiple build formats
-# may bundle their own copy). This means a route parameter name with a
-# non-ASCII character (e.g. `/users/:文件`) would no longer validate --
-# an exceedingly rare thing to name a route parameter, and code-server's
-# own routes don't do this, so this is a real but practically-inert
-# functionality cut, not a silent correctness risk.
-# Substitution done via node -e rather than sed: the exact number of
-# backslashes sed needs in its own pattern language to match a literal
-# `\p{ID_Start}` is easy to get subtly wrong (and was, in an earlier
-# revision of this script -- verified locally: it silently left a
-# dangling backslash behind, `[$_\a-zA-Z]`, which doesn't even parse as a
-# valid regex). Plain JS string replacement has no such ambiguity.
+# Replace Unicode property escapes with ASCII-only equivalents everywhere
+# they appear in the fetched payload (multiple build formats may bundle
+# their own copy). This started out matching only \p{ID_Start}/
+# \p{ID_Continue} (path-to-regexp's route-parameter validation), but
+# --with-intl=none rejects the \p{...} *syntax* itself at regex-compile
+# time regardless of which property name is inside the braces -- it's a
+# parser-level capability gate, not specific to those two names. Confirmed
+# as a second, separate real crash via NodeRuntimeController's captured
+# stdio log, after the ID_Start/ID_Continue fix already landed: vscode's
+# own server bundle (lib/vscode/out/server-main.js, loaded by
+# code-server's loadVSCode()) uses \p{L} (invoked from
+# ensureVSCodeLoaded/CodeServerRouteWrapper) in a route/path validation
+# regex, unrelated to path-to-regexp -- "Invalid regular expression: ...
+# Invalid property name in character class" again, different file,
+# different property name. Matching every \p{...}/\P{...} occurrence
+# generically, not just those two known ones, closes this whole class of
+# crash instead of patching one more instance at a time as each is
+# separately discovered by hitting it at runtime.
+# This means a route/identifier containing a non-ASCII character no
+# longer validates via these specific checks -- rare in practice, and
+# code-server's own routes don't do this, so it's a real but
+# practically-inert functionality cut, not a silent correctness risk.
+# Substitution done via node -e string scanning rather than sed or a
+# regex: the exact number of backslashes sed needs in its own pattern
+# language to match a literal `\p{...}` is easy to get subtly wrong (and
+# was, in an earlier revision of this script -- verified locally: it
+# silently left a dangling backslash behind, `[$_\a-zA-Z]`, which doesn't
+# even parse as a valid regex), and a JS regex literal embedded in this
+# same bash double-quoted string would need yet another layer of
+# backslash-counting on top of that. Plain indexOf/slice scanning for the
+# literal `\p{` marker has no such ambiguity in either layer.
 node -e "
   const fs = require('fs');
   const path = require('path');
+  const REPLACEMENTS = {
+    ID_Start: 'a-zA-Z',
+    ID_Continue: '0-9a-zA-Z_',
+    L: 'a-zA-Z',
+    Lu: 'A-Z',
+    Ll: 'a-z',
+    N: '0-9',
+    Nd: '0-9',
+    Alphabetic: 'a-zA-Z',
+    Alpha: 'a-zA-Z',
+  };
+  const FALLBACK = 'a-zA-Z0-9_';
+  const MARKER = '\\\\p{';
+  function patch(text) {
+    let out = '';
+    let i = 0;
+    let changed = false;
+    while (true) {
+      const start = text.indexOf(MARKER, i);
+      if (start === -1) { out += text.slice(i); break; }
+      const end = text.indexOf('}', start);
+      if (end === -1) { out += text.slice(i); break; }
+      const propName = text.slice(start + MARKER.length, end);
+      out += text.slice(i, start);
+      out += (propName in REPLACEMENTS) ? REPLACEMENTS[propName] : FALLBACK;
+      i = end + 1;
+      changed = true;
+    }
+    return changed ? out : null;
+  }
   function walk(dir) {
     for (const name of fs.readdirSync(dir)) {
       const full = path.join(dir, name);
       const stat = fs.lstatSync(full);
       if (stat.isDirectory()) walk(full);
       else if (stat.isFile()) {
-        const text = fs.readFileSync(full, 'utf8');
-        if (text.includes('\\\\p{ID_Start}') || text.includes('\\\\p{ID_Continue}')) {
-          const patched = text
-            .split('\\\\p{ID_Start}').join('a-zA-Z')
-            .split('\\\\p{ID_Continue}').join('0-9a-zA-Z_');
+        const patched = patch(fs.readFileSync(full, 'utf8'));
+        if (patched !== null) {
           fs.writeFileSync(full, patched);
-          console.log('patched \\\\p{ID_Start}/\\\\p{ID_Continue} in ' + full);
+          console.log('patched unicode property escapes in ' + full);
         }
       }
     }
