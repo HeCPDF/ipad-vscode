@@ -52,6 +52,35 @@ This project targets the **real, unmodified Node extension host** — not vscode
 - **nodejs-mobile's `worker_threads` support is unconfirmed.** It's core Node/V8 machinery (multiple Isolates within one Platform), not an optional native addon, so there's good reason to expect it works — but this has not been checked against an actual build, with no Mac/iPad available in this pipeline. If the extension host fails to start, this is the first thing to check.
 - `acceptReconnection()`'s fd-passing branch and `shortenReconnectionGraceTimeIfNecessary()` assume a real `ChildProcess` handle, which this path doesn't have (documented in the patch itself) — reconnect-after-drop for the exthost specifically is unaddressed.
 
+## JIT: currently disabled (`--jitless`) — real support is a bigger project than anything else here
+
+**Status: workaround in place, not a fix.** `NodeRuntimeController.swift` passes `--jitless` to Node, so V8 runs in pure interpreter mode — no executable-page allocation at all, at a real (unmeasured so far) performance cost, but it needs no special entitlement and no debugger attached, matching this app's actual sideload story. This is a real-device finding, not a CI one — Simulator doesn't enforce the iOS codesigning restriction being worked around here at all, so it can't confirm or deny any of this.
+
+**The problem**: a third-party process may not mark memory pages executable at runtime (needed for V8's JIT to actually execute the code it compiles) unless it holds the `dynamic-codesigning` entitlement — which Apple grants only in narrow cases, not to a free/Personal Team signing identity — or is `CS_DEBUGGED` (a live debugger attached). Confirmed against a real device, not assumed: a normally-sideloaded build (Sideloadly) white-screens and is killed moments after opening; the identical build, run indirectly inside LiveContainer (which arranges JIT access for its guest apps), works.
+
+**It's worse than a one-time permission check on iOS 26+/TXM devices.** Attaching a debugger (e.g. StikDebug) to set `CS_DEBUGGED` was tried on a real iOS 27 device and the app **still** white-screened and crashed. Researched by reading the real, open-source implementation other iOS apps that need JIT actually ship (`utmapp/UTM`'s `Services/UTMJailbreak.m`, and — per a device confirmed to have TXM — `AngelAuraMC/Amethyst-iOS`'s `Natives/utils.m` and `Natives/resources/UniversalJIT26.js`, not guessed or inferred from articles alone): on a device with TXM (Trusted Execution Monitor, iOS 26+), a live `CS_DEBUGGED` flag is necessary but not sufficient — Amethyst's own check is
+
+```objc
+BOOL isJITEnabled(BOOL checkCSFlags) {
+    ...
+    if ((flags & CS_DEBUGGED) == 0) return NO;
+    if (!DeviceHasJITFlags(JIT_FLAG_FORCE_MIRRORED | JIT_FLAG_HAS_TXM)) {
+        return YES; // below iOS 26, or no TXM: CS_DEBUGGED alone is enough
+    }
+    return JIT26IsLikelyDebuggerKeepAttached(); // TXM: the debugger must still be attached, not just have attached once
+}
+```
+
+and even that's only the *permission check* — actually obtaining an executable page on a TXM device means the app can't just `mmap(PROT_EXEC)` itself anymore. It has to ask the attached debugger for one, per-allocation, via a breakpoint-based protocol: the app executes a specific instruction sequence (`mov x16, #1; brk #0xf00d`) that traps into the debugger, which — if it's running the matching `UniversalJIT26.js` script (a GDB-remote-protocol JS extension, not a native API) — allocates the page on the app's behalf and hands the address back through registers. This is real, working code in Amethyst's launcher, but the launcher repo only does the CS_DEBUGGED/TXM detection; the actual per-allocation `JIT26PrepareRegion` calls live inside their JVM's own JIT compiler, which isn't part of that repo and wasn't inspected.
+
+**What full support would take**: the equivalent integration point for this project is V8's own memory-allocation code (roughly `v8/src/base/platform/platform-*.cc`, wherever executable pages get requested) inside `nodejs-mobile`'s fork — patched to detect a live, TXM-compatible debugger and route through this breakpoint protocol instead of a plain `mmap`/`mprotect` call when one is attached, falling back to `--jitless` otherwise. This is a materially larger, riskier undertaking than any other patch in this project so far: it's C++ inside V8's own JIT backend, not a Swift/TS/JS-level fix, and — unlike everything CI can currently check — every iteration needs a real iOS 26+/TXM device with a JIT-enabling tool (StikDebug or similar) actively attached and running a compatible script, which this pipeline has no way to automate or verify. Not started; `--jitless` is the interim baseline while this is scoped as separate, larger follow-up work.
+
+## `--with-intl=none`: workarounds patched in per-crash, not a real fix
+
+**Status: workaround in place, not a fix**, same as JIT above. `nodejs-mobile`'s iOS build compiles Node with `--with-intl=none` — no ICU at all, which is a **compile-time V8 capability gate**, not just reduced locale data: the `u`-flag regex parser itself refuses *any* Unicode property escape (`\p{PropertyName}`) in a regular expression, throwing `Invalid regular expression: ... Invalid property name in character class` regardless of which property name is inside the braces. `--with-intl=small-icu` was tried and reverted: it compiled correctly (`V8_INTL_SUPPORT` confirmed present), but exposed a separate, real bug in nodejs-mobile's own build system — `genrb` (a build-time host tool that generates the ICU data file) gets cross-compiled as an iOS binary instead of one that can actually run on the Mac doing the building, so it can never execute during the build. That's the real fix (a GYP host/target toolchain bug in `nodejs-mobile` itself), not attempted yet.
+
+What's shipping instead, in `scripts/trim-code-server.sh`: every `\p{...}` occurrence found anywhere in the fetched code-server/vscode payload gets string-patched to an ASCII-only equivalent (known common property classes get a matching character range; anything unrecognized falls back to `a-zA-Z0-9_`). Two real crashes have been found and patched this way so far — `path-to-regexp`'s `\p{ID_Start}`/`\p{ID_Continue}` (route-parameter validation), and a different property class, `\p{L}`, in vscode's own `server-main.js` — discovered one at a time, each only after actually hitting it at runtime, not by auditing the payload up front. This is inherently reactive: there is no way to know a *third* occurrence isn't waiting further into some code path this project hasn't exercised yet, since the fetched payload isn't statically scanned for this pattern, and it's a real (if narrow) functionality cut — an identifier or route parameter containing a non-ASCII character no longer validates via these specific checks.
+
 ## Status
 
 There are three distinct verification tiers in CI (`.github/workflows/build.yml`), and it matters which one a given claim rests on:
@@ -92,7 +121,9 @@ This confirms the server-side application logic itself — routing, workspace ha
 
 ## Not done yet
 
-- Running any of this on an actual **device** — no Mac, no signing, no way to do that here.
+- **Real device testing has actually started** (outside this pipeline, which still has no Mac/iPad — the user did this on their own hardware): a normally-sideloaded build white-screens and crashes moments after opening; see "JIT: currently disabled" above for what that traced to and the interim `--jitless` workaround, not yet confirmed to fix it.
+- Real JIT support (the breakpoint-based protocol TXM-era iOS requires) — see "JIT: currently disabled" above. A materially bigger task than anything else in this list: a V8 memory-allocator patch inside `nodejs-mobile`, verifiable only on a real iOS 26+/TXM device with a JIT-enabling tool attached.
+- Fixing `nodejs-mobile`'s real GYP host/target cross-compile bug so `--with-intl=small-icu` can build for real — see "`--with-intl=none`" above. Would close off the whole class of `\p{...}` regex crash this project currently patches one occurrence at a time as each is separately hit at runtime, instead of fixing the actual cause.
 - Re-verifying the rewritten `ios-exthost-no-fork.diff` against a real `tsc` type-check (the previous, now-superseded revision was; this one hasn't been yet — no local vscode build environment in this pipeline for it).
 - Confirming `worker_threads` actually works in nodejs-mobile's embedded libnode build.
 - File System Provider bridging so the *rest* of code-server's file access (not just the workspace root, which the folder picker now handles) can reach iOS Files/iCloud
