@@ -144,6 +144,26 @@ final class NodeRuntimeController: ObservableObject {
 
         var arguments = [
             "node",
+            // iOS denies third-party processes the ability to mark memory
+            // pages executable at runtime (no dynamic-codesigning
+            // entitlement -- Apple grants that only in narrow cases, not
+            // to a free/Personal Team signing identity) unless the
+            // process is CS_DEBUGGED (a live debugger attached). V8's
+            // default JIT compiles and then executes machine code from
+            // freshly-allocated pages, which needs exactly that. Confirmed
+            // as the real cause of a reported crash, not assumed: a
+            // normally-sideloaded build white-screens and is killed
+            // moments after launch on a real device, while the same build
+            // run indirectly inside LiveContainer (which arranges JIT
+            // access for its guest apps) works -- and CI's Simulator,
+            // which doesn't enforce this restriction on real iOS hardware
+            // at all, was never able to catch this since it isn't real
+            // codesigning enforcement. --jitless runs V8 in pure
+            // interpreter mode (no executable-page allocation at all), at
+            // a real performance cost, but works under a plain signing
+            // identity with no debugger attached and no special
+            // entitlement -- the actual sideload story for this app.
+            "--jitless",
             "--max-old-space-size=256",
             entryScript,
         ]
