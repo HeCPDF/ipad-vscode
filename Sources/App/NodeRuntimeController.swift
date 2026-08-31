@@ -83,19 +83,29 @@ final class NodeRuntimeController: ObservableObject {
     /// Node's own uncaught-exception handling prints to raw C stderr and
     /// then calls `process.exit()` — which, since Node is embedded as a
     /// library here rather than a real child process, terminates this
-    /// entire host app, not just "the Node part". That output never
-    /// reaches Xcode/CI: `simctl launch`'s `--stdout`/`--stderr` capture
-    /// flags are denied outright by this environment's `simctl`
-    /// (`FBSOpenApplicationServiceErrorDomain` / `SBMainWorkspace`,
-    /// reproduced repeatedly — a real tooling limitation, not our bug),
-    /// and unified logging (`os.Logger`) only sees log calls that go
-    /// through it, not raw stdio. Redirecting the C-level stderr/stdout
-    /// streams to a file *inside this app's own sandbox* survives the
-    /// process exiting, since it's a real file on disk — CI can pull it
-    /// out afterward via `simctl get_app_container` even though the
-    /// process that wrote it is gone.
+    /// entire host app, not just "the Node part". Confirmed on a real
+    /// device via sysdiagnose, not assumed: a sideloaded launch's WKWebView
+    /// fails to connect to 127.0.0.1:\(RuntimeConfig.loopbackPort) (-1004,
+    /// server never came up / already gone), and ~100ms later launchd logs
+    /// the whole host process as "exited due to exit(1)" -- a clean
+    /// voluntary exit, not a signal, which is exactly why it leaves no
+    /// .ips crash report and bounces to the home screen in well under a
+    /// second. That output never reaches Xcode/CI either: `simctl
+    /// launch`'s `--stdout`/`--stderr` capture flags are denied outright by
+    /// this environment's `simctl` (`FBSOpenApplicationServiceErrorDomain`
+    /// / `SBMainWorkspace`, reproduced repeatedly — a real tooling
+    /// limitation, not our bug), and unified logging (`os.Logger`) only
+    /// sees log calls that go through it, not raw stdio. Redirecting the
+    /// C-level stderr/stdout streams to a file *inside this app's own
+    /// sandbox* survives the process exiting, since it's a real file on
+    /// disk — CI can pull it out afterward via `simctl get_app_container`,
+    /// and on a real device it lands in RuntimeConfig.diagnosticsURL
+    /// (Documents/Diagnostics, exposed to the Files app) specifically so it
+    /// can be retrieved with nothing but the iPad itself: the crash is too
+    /// fast (well under the time UIKit needs to show a single frame) for
+    /// any on-screen log viewer to ever get a chance to run.
     private func redirectStderrToFile() {
-        let logURL = RuntimeConfig.privateStorageURL.appendingPathComponent("node-stdio.log")
+        let logURL = RuntimeConfig.diagnosticsURL.appendingPathComponent("node-stdio.log")
         freopen(logURL.path, "w", stdout)
         freopen(logURL.path, "a", stderr)
         setvbuf(stdout, nil, _IONBF, 0)

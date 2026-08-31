@@ -82,6 +82,15 @@ targets:
         UIRequiresFullScreen: false
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        # Exposes Documents/Diagnostics (node-stdio.log — see
+        # RuntimeConfig.diagnosticsURL / NodeRuntimeController.swift) in the
+        # on-device Files app. A real-device sysdiagnose confirmed the app
+        # can die well under a second after launch, before any in-app UI has
+        # a chance to render a log viewer or share sheet — this is the only
+        # way to retrieve that log with nothing but the iPad itself (no
+        # Mac/Xcode to pull the app container).
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         # No paid-account entitlement needed — a plain Info.plist
         # declaration, honored by iOS for any signing identity. Apple's
         # App Store review rejects apps that declare this without a

@@ -115,7 +115,7 @@ jobs:
             xcrun simctl spawn "$SIM_UDID" log show --predicate 'subsystem CONTAINS "com.hecpdf.ipadvscode"' --last 1m > "artifacts/simulator-log-$i-pre-uitest.txt" || true
 
             CONTAINER=$(xcrun simctl get_app_container "$SIM_UDID" com.hecpdf.ipadvscode data 2>/dev/null || true)
-            NODE_LOG="$CONTAINER/Library/Application Support/iPadVSCode/node-stdio.log"
+            NODE_LOG="$CONTAINER/Documents/Diagnostics/node-stdio.log"
             cp "$NODE_LOG" "artifacts/node-stdio-$i-pre-uitest.log" 2>/dev/null || echo "(no node-stdio.log yet for iteration $i)"
 
             xcodebuild test-without-building \
@@ -126,7 +126,7 @@ jobs:
             [ -d "/tmp/uitest-results-$i.xcresult" ] && cp -R "/tmp/uitest-results-$i.xcresult" "artifacts/uitest-results-$i.xcresult" || true
 
             CONTAINER=$(xcrun simctl get_app_container "$SIM_UDID" com.hecpdf.ipadvscode data 2>/dev/null || true)
-            NODE_LOG="$CONTAINER/Library/Application Support/iPadVSCode/node-stdio.log"
+            NODE_LOG="$CONTAINER/Documents/Diagnostics/node-stdio.log"
             cp "$NODE_LOG" "artifacts/node-stdio-$i-post-uitest.log" 2>/dev/null || echo "(no node-stdio.log for iteration $i)"
             xcrun simctl spawn "$SIM_UDID" log show --predicate 'subsystem CONTAINS "com.hecpdf.ipadvscode"' --last 5m > "artifacts/simulator-log-$i-post-uitest.txt" || true
             echo "::endgroup::"

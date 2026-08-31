@@ -21,4 +21,24 @@ enum RuntimeConfig {
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
+
+    /// Where node-stdio.log lives. Deliberately under Documents rather than
+    /// Application Support (unlike privateStorageURL above): a real-device
+    /// sysdiagnose confirmed the whole host app dies (Node's uncaught-
+    /// exception handler calling process.exit(), see
+    /// NodeRuntimeController.redirectStderrToFile) well under a second after
+    /// launch, before any UI can render -- so there's never a moment to show
+    /// this log on-screen or offer a share sheet. Documents plus
+    /// UIFileSharingEnabled/LSSupportsOpeningDocumentsInPlace (project.yml)
+    /// makes it show up directly in the iPad's own Files app afterward,
+    /// which is the only way to get it off the device at all when the only
+    /// hardware available is the iPad itself -- no Mac/Xcode to pull the app
+    /// container.
+    static var diagnosticsURL: URL {
+        let url = FileManager.default
+            .urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Diagnostics", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
 }
