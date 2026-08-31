@@ -60,6 +60,15 @@ final class NodeRuntimeController: ObservableObject {
     /// returns its resolved path for `?folder=`/`?workspace=`. Trivial now
     /// that everything runs in one process — no more bookmark hand-off to a
     /// separate extension's sandbox.
+    ///
+    /// Also persists the bookmark (`WorkspaceSelection.store`) so
+    /// `startNodeRuntime()`'s own `resolveBookmark` call can pre-authorize
+    /// this same folder's security scope on the next launch, before
+    /// code-server's own last-opened-folder mechanism tries to reopen it.
+    /// Last authorized wins if more than one folder is authorized in a
+    /// session (e.g. Add Folder to Workspace) — there's only one bookmark
+    /// slot; extending this to remember every folder in a multi-root
+    /// workspace is future work, not something this fixes.
     func authorizeWorkspace(_ url: URL) async throws -> String {
         guard url.startAccessingSecurityScopedResource() else {
             throw NodeRuntimeError.workspaceAuthorizationFailed("startAccessingSecurityScopedResource failed")
@@ -67,6 +76,7 @@ final class NodeRuntimeController: ObservableObject {
         if !accessedSecurityScopedWorkspaces.contains(where: { $0.path == url.path }) {
             accessedSecurityScopedWorkspaces.append(url)
         }
+        WorkspaceSelection.store(url: url, in: RuntimeConfig.privateStorageURL)
         return url.path
     }
 
