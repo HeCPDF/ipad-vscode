@@ -248,6 +248,54 @@ node -e "
   walk('.');
 "
 
+# Fourth crash in the same debugging session, one step further into
+# startup than the import.meta.dirname fix: after that fix, node-stdio.log
+# showed "Extension host agent listening on 8000" -- real progress, past
+# NLS loading entirely -- then a new one: "CodeServerRouteWrapper: crypto
+# is not defined ReferenceError: crypto is not defined", thrown from
+# server-main.js while handling an actual incoming connection (Array.find
+# inside a request/agent-handshake handler).
+#
+# Node exposes the Web Crypto API as a bare global `crypto` (no require()
+# needed) only since v19; before that it's available exclusively via
+# require("crypto").webcrypto (stable since ~v16). This whole debugging
+# session's pattern -- import.meta.dirname (20.11/21.2), \p{...} regex
+# support tied to --with-intl, etc. -- points at nodejs-mobile embedding
+# something around Node 18: old enough to lack the global, new enough
+# that require("crypto").webcrypto genuinely exists (confirmed present in
+# the sandbox's own Node here, and it's been in Node far longer than the
+# auto-global convenience has).
+#
+# Fix at the true process entry point rather than searching for every
+# bare `crypto` reference in a multi-megabyte minified bundle (unlike the
+# two patches above, "crypto" is far too common a substring/identifier to
+# safely blanket-replace -- it would just as easily hit a local variable
+# or an already-correct require("crypto") call). Prepend a global-crypto
+# shim to the compiled out/node/entry.js -- the literal file node_start()
+# loads (NodeRuntimeController.swift) -- so it runs before every other
+# require() in the process, CommonJS or dynamically-imported ESM alike
+# (globalThis is shared process-wide regardless of module system), and is
+# a no-op on any future build where the global already exists natively.
+ENTRY_JS="out/node/entry.js"
+if [ -f "$ENTRY_JS" ]; then
+  # code-server's own build-code-server.sh already prepends a
+  # #!/usr/bin/env node shebang as line 1 if one isn't already there.
+  # Node only recognizes/strips a shebang on the file's literal first
+  # line -- inserting our shim above it would push the shebang to line 2,
+  # where Node would instead try to parse "#!/usr/bin/env node" as
+  # JavaScript and fail immediately on the leading `#`. Insert after the
+  # shebang if present, otherwise at the very top.
+  if head -n1 "$ENTRY_JS" | grep -q "^#!"; then
+    { head -n1 "$ENTRY_JS"; echo 'if(typeof globalThis.crypto==="undefined"){globalThis.crypto=require("crypto").webcrypto;}'; tail -n +2 "$ENTRY_JS"; } > "$ENTRY_JS.tmp"
+  else
+    { echo 'if(typeof globalThis.crypto==="undefined"){globalThis.crypto=require("crypto").webcrypto;}'; cat "$ENTRY_JS"; } > "$ENTRY_JS.tmp"
+  fi
+  mv "$ENTRY_JS.tmp" "$ENTRY_JS"
+  echo "inserted globalThis.crypto shim into $ENTRY_JS"
+else
+  echo "WARNING: $ENTRY_JS not found, cannot insert globalThis.crypto shim" >&2
+fi
+
 echo "trim complete (node-pty, node_modules/.bin symlinks). remaining .node files (kept, for future cross-compile):"
 find . -name "*.node"
 echo "size: $(du -sh . | cut -f1)"
