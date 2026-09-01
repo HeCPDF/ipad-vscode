@@ -42,6 +42,75 @@ struct iPadVSCodeApp: App {
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
             }
+
+            // Everything below dispatches a simulated vscode keybinding
+            // into the webview instead of doing anything itself — see
+            // MenuBridge.SimulatedKeyCommand.dispatchScript for the whole
+            // mechanism and its real "does vscode ignore untrusted
+            // KeyboardEvents" open question, unverified on-device as of
+            // this writing.
+            //
+            // Deliberately NOT given `.keyboardShortcut(...)` modifiers:
+            // doing so would make SwiftUI's menu system intercept the real
+            // hardware keypress before it ever reaches the webview, which
+            // — for exactly these commands — already works today via plain
+            // passthrough (WKWebView delivers real hardware key events to
+            // the page as trusted DOM events, no native involvement
+            // needed). Binding a shortcut here would trade a
+            // known-working, trusted path for an unverified, untrusted
+            // one. These menu items exist purely for mouse/trackpad/tap
+            // discoverability — a real keypress skips this file entirely.
+            CommandGroup(after: .saveItem) {
+                Button("Save") {
+                    menuBridge.pendingKeyCommand = .meta("s", code: "KeyS")
+                }
+            }
+
+            CommandGroup(replacing: .undoRedo) {
+                Button("Undo") {
+                    menuBridge.pendingKeyCommand = .meta("z", code: "KeyZ")
+                }
+                Button("Redo") {
+                    menuBridge.pendingKeyCommand = .meta("z", code: "KeyZ", shift: true)
+                }
+            }
+
+            CommandGroup(after: .textEditing) {
+                Divider()
+                Button("Find") {
+                    menuBridge.pendingKeyCommand = .meta("f", code: "KeyF")
+                }
+                Button("Find in Files…") {
+                    menuBridge.pendingKeyCommand = .meta("f", code: "KeyF", shift: true)
+                }
+            }
+
+            CommandMenu("View") {
+                Button("Command Palette…") {
+                    menuBridge.pendingKeyCommand = .meta("p", code: "KeyP", shift: true)
+                }
+                Button("Explorer") {
+                    menuBridge.pendingKeyCommand = .meta("e", code: "KeyE", shift: true)
+                }
+                Button("Toggle Sidebar") {
+                    menuBridge.pendingKeyCommand = .meta("b", code: "KeyB")
+                }
+                Button("Toggle Terminal") {
+                    menuBridge.pendingKeyCommand = .ctrl("`", code: "Backquote")
+                }
+            }
+
+            CommandMenu("Go") {
+                Button("Go to File…") {
+                    menuBridge.pendingKeyCommand = .meta("p", code: "KeyP")
+                }
+            }
+
+            CommandMenu("Terminal") {
+                Button("New Terminal") {
+                    menuBridge.pendingKeyCommand = .ctrl("`", code: "Backquote", shift: true)
+                }
+            }
         }
     }
 }

@@ -60,6 +60,11 @@ struct ContentView: View {
             isPickingFolder = true
             menuBridge.addFolderToWorkspaceRequested = false
         }
+        .onChange(of: menuBridge.pendingKeyCommand) { _, command in
+            guard let command else { return }
+            webView.evaluateJavaScript(command.dispatchScript)
+            menuBridge.pendingKeyCommand = nil
+        }
         .onAppear(perform: applyMinimumWindowSize)
         .alert(
             "Couldn't open folder",
