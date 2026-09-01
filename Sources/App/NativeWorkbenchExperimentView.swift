@@ -14,22 +14,28 @@ import WebKit
 /// acts on, to render the real vscode desktop workbench shell (title
 /// bar, activity bar, welcome page chrome) and then fail the moment
 /// anything calls into one of the ~31 IPC channels (`nativeHost` etc.)
-/// that don't exist yet — the raw byte transport (VSCodeIPCBridge) is
-/// wired up, but nothing on the native/Node side speaks the
-/// IPCServer/ProxyChannel protocol riding on top of it yet, so every
-/// `ipcRenderer.invoke(...)` still rejects. This view exists to observe
-/// exactly what does and doesn't work on that first real render, not to
-/// be a working editor.
+/// that don't exist yet — the raw byte transport (VSCodeIPCBridge) now
+/// relays (via VSCodeIPCWebSocketRelay) into a real
+/// IPCServer/ChannelServer-compatible backend
+/// (code-server/src/node/ipadVSCodeIpc.ts, over a new WebSocket route on
+/// the already-running code-server loopback server), but that backend so
+/// far only registers one diagnostic channel (`ipadVSCodePing`) — every
+/// real vscode channel the workbench itself calls (`nativeHost` etc.)
+/// still gets a real, well-formed "Unknown channel" error back rather
+/// than hanging, which is progress over rejecting locally, but still not
+/// functional. This view exists to observe exactly what does and doesn't
+/// work on that first real render, not to be a working editor.
 struct NativeWorkbenchExperimentView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var webView: WKWebView?
     @State private var unavailableReason: String?
     // Held here (not just implicitly retained by the
     // WKUserContentController it's registered on) so its lifetime is
-    // explicit and so a future native IPC backend has an obvious place
-    // to subscribe via `ipcBridge.onFrame = ...` — see
-    // VSCodeIPCBridge.swift's doc comment on that seam.
+    // explicit.
     @State private var ipcBridge: VSCodeIPCBridge?
+    // Relays ipcBridge's frames to/from code-server's real
+    // /ipad-vscode-ipc WebSocket route — see that class's doc comment.
+    @State private var ipcRelay = VSCodeIPCWebSocketRelay()
 
     var body: some View {
         NavigationStack {
@@ -54,6 +60,7 @@ struct NativeWorkbenchExperimentView: View {
                     Button("Close") { dismiss() }
                 }
             }
+            .onDisappear { ipcRelay.disconnect() }
         }
         .task { setUpIfNeeded() }
     }
@@ -73,6 +80,7 @@ struct NativeWorkbenchExperimentView: View {
         let bridge = VSCodeIPCBridge()
         bridge.attach(to: newWebView)
         ipcBridge = bridge
+        ipcRelay.connect(bridge: bridge)
         webView = newWebView
 
         var components = URLComponents()
