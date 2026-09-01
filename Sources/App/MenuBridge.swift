@@ -39,7 +39,7 @@ struct SimulatedKeyCommand: Equatable {
     }
 
     static func ctrl(_ key: String, code: String, shift: Bool = false) -> SimulatedKeyCommand {
-        SimulatedKeyCommand(key: key, code: code, ctrlKey: true, shiftKey: shift)
+        SimulatedKeyCommand(key: key, code: code, shiftKey: shift, ctrlKey: true)
     }
 
     /// UNVERIFIED on a real device (nothing to test a WKWebView keyboard
