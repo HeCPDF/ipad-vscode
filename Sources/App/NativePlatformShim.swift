@@ -15,10 +15,14 @@ import WebKit
 /// This is the smallest possible experiment for the hypothesis, not a
 /// claim of functional completeness: flipping this flag makes
 /// `isNative`-gated UI (context keys, menus) *appear* enabled, but
-/// anything that actually calls into a native IPC channel (`nativeHost`
-/// etc. — none of which exist yet, see VSCodeFileSchemeHandler's doc
-/// comment) will still fail at runtime. That gap is expected, not a bug
-/// in this shim.
+/// anything that actually calls into a named service over the real
+/// `nativeHost` IPC channel (none of which exist yet, see
+/// VSCodeFileSchemeHandler's doc comment) will still fail at runtime.
+/// `window.vscode.context` (a locally-fabricated `ISandboxConfiguration`,
+/// found missing via real Simulator evidence -- see its own comment
+/// below) is the one exception so far: a preload-level bootstrap
+/// dependency, not one of the ~31 service channels, so it's faked
+/// synchronously here rather than routed through the real IPC transport.
 enum NativePlatformShim {
     /// `platform: 'darwin'` is a deliberate approximation, not a real
     /// match — there's no canonical `process.platform` value for
@@ -91,6 +95,53 @@ enum NativePlatformShim {
                 for (var i = 0; i < arr.length; i++) { binary += String.fromCharCode(arr[i]); }
                 return btoa(binary);
             }
+            // ---- context shim (ISandboxConfiguration) ----
+            // Real preload.ts (lines 227-244 at the pinned commit) exposes
+            // window.vscode.context.{configuration,resolveConfiguration} --
+            // the real implementation resolves this over a real IPC round
+            // trip (ipcRenderer.invoke(a --vscode-window-config=<channel>
+            // argv-supplied channel name)), which this project's
+            // ipcRenderer.invoke shim always rejects (no invoke responder
+            // exists yet -- see below). Found missing entirely via real
+            // Simulator evidence: workbench.ts's resolveWindowConfiguration()
+            // (vs/code/electron-browser/workbench/workbench.ts:420-428)
+            // does `await preloadGlobals.context.resolveConfiguration()`,
+            // which threw synchronously ("Cannot read properties of
+            // undefined") when `context` didn't exist at all -- observed as
+            // an "unhandled promise rejection" in NativeConsoleForwarder's
+            // log, with workbench.ts's own orphaned 10-second timeout (never
+            // cleared, since the throw happened before reaching
+            // clearTimeout) firing independently right after.
+            //
+            // Rather than wiring this through the real invoke() RPC path
+            // (a bigger lift -- see VSCodeIPCBridge.swift's doc comment on
+            // where a request/response-correlated invoke responder would
+            // attach), this fabricates a minimal but real-shaped
+            // ISandboxConfiguration locally, the same "smallest possible
+            // experiment" approach the process shim above already takes.
+            // Only the base ISandboxConfiguration fields (sandboxTypes.ts,
+            // confirmed from real source) are populated; nothing here has
+            // been verified against what workbench code actually reads out
+            // of `configuration` past this point -- the next thing to find
+            // out from real Simulator evidence, not guessed ahead of it.
+            var ipadVSCodeSandboxConfiguration = {
+                windowId: 1,
+                appRoot: '/',
+                userEnv: {},
+                product: {
+                    nameShort: 'iPad VSCode',
+                    nameLong: 'iPad VSCode',
+                    applicationName: 'ipad-vscode',
+                    dataFolderName: '.ipadvscode',
+                    version: '1.0.0'
+                },
+                nls: { messages: [], language: undefined }
+            };
+            window.vscode.context = {
+                configuration: function () { return ipadVSCodeSandboxConfiguration; },
+                resolveConfiguration: function () { return Promise.resolve(ipadVSCodeSandboxConfiguration); }
+            };
+
             window.vscode.ipcRenderer = {
                 send: function (channel) {
                     var args = Array.prototype.slice.call(arguments, 1);
