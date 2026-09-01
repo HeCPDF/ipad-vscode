@@ -1,23 +1,32 @@
 name: Simulator Test
 
-# The Simulator boot/UI-test/log-capture portion of build.yml, factored
-# out into its own reusable workflow so it has exactly one definition
-# instead of two near-duplicates. Two ways it runs:
-#   - Called from build.yml's own `test` job (workflow_call, no `run_id`
-#     input) -- downloads the `simulator-test-build` artifact the `build`
-#     job in the SAME run already uploaded.
-#   - Invoked standalone (workflow_dispatch, `run_id` required) against
-#     ANY prior successful `build` job's artifact -- for reproducibility
-#     testing (does an intermittent failure, e.g. the app dying silently
-#     ~45-60s into UI test interaction with no crash report, repeat on
-#     the exact same already-built binary?) or iterating on this test
-#     script itself, without paying the ~5 minutes of
-#     checkout/xcodegen/compile build.yml's own `build` job needs on every
-#     attempt. Only works against a `build` job run after the commit that
+# The Simulator boot/UI-test/log-capture step, deliberately a fully
+# separate workflow from build.yml rather than a job it calls inline --
+# build.yml changes rarely; this one changes often (iterating on the test
+# script itself, reproducibility repeats, etc.), and the two shouldn't
+# share a single workflow run just because one happens to need the
+# other's artifact. Three ways it runs, all downloading the
+# `simulator-test-build` artifact (app + compiled UI test bundle +
+# .xctestrun) build.yml's `build` job uploads -- never recompiles itself:
+#   - Automatically, via `workflow_run`, whenever the Build workflow
+#     completes successfully -- pulls the artifact from that same
+#     triggering run (github.event.workflow_run.id).
+#   - Standalone (workflow_dispatch, `run_id` required) against ANY prior
+#     successful `build` job's artifact -- for reproducibility testing
+#     (does an intermittent failure, e.g. the app dying silently ~45-60s
+#     into UI test interaction with no crash report, repeat on the exact
+#     same already-built binary?) or iterating on this test script itself
+#     without paying the ~5 minutes build.yml's own `build` job needs.
+#     Only works against a `build` job run after the commit that
 #     introduced the `simulator-test-build` artifact; older runs won't
 #     have it.
+#   - workflow_call, for any other workflow that wants to reuse this
+#     (nothing currently does, kept as a clean extension point).
 
 on:
+  workflow_run:
+    workflows: ["Build"]
+    types: [completed]
   workflow_call:
     inputs:
       run_id:
@@ -41,6 +50,10 @@ on:
 jobs:
   test:
     name: Boot Simulator + run UI tests
+    # workflow_run fires on every completion, success or failure -- a
+    # failed Build has no simulator-test-build artifact to pull (the job
+    # that uploads it never ran), so skip rather than fail noisily.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: macos-26
     steps:
       - name: Runner memory/CPU
@@ -51,15 +64,23 @@ jobs:
       # No checkout, no xcodegen, no compile -- the whole point of this
       # workflow existing separately is to skip all of that and reuse
       # what the `build` job already produced.
-      - name: Download simulator-test-build artifact (same run)
-        if: inputs.run_id == ''
+      - name: Download simulator-test-build artifact (same run, via workflow_call)
+        if: github.event_name == 'workflow_call' && inputs.run_id == ''
         uses: actions/download-artifact@v4
         with:
           name: simulator-test-build
           path: /tmp/derived-sim/Build/Products
 
-      - name: Download simulator-test-build artifact (cross-run)
-        if: inputs.run_id != ''
+      - name: Download simulator-test-build artifact (triggering Build run, via workflow_run)
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/derived-sim/Build/Products
+          gh run download "${{ github.event.workflow_run.id }}" --repo ${{ github.repository }} --name simulator-test-build --dir /tmp/derived-sim/Build/Products
+
+      - name: Download simulator-test-build artifact (explicit run_id, cross-run)
+        if: github.event_name != 'workflow_run' && inputs.run_id != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -100,9 +121,15 @@ jobs:
       # the whole point of repeating is to see which iterations fail and
       # which don't.
       - name: Repeat install + launch + UI test + log capture
+        env:
+          # inputs.repeat is unset for a workflow_run trigger (inputs
+          # only comes from workflow_dispatch/workflow_call) -- default
+          # to a single pass there rather than feeding an empty string to
+          # `seq`.
+          REPEAT_COUNT: ${{ inputs.repeat || '1' }}
         run: |
           mkdir -p artifacts
-          for i in $(seq 1 "${{ inputs.repeat }}"); do
+          for i in $(seq 1 "$REPEAT_COUNT"); do
             echo "::group::Iteration $i"
             xcrun simctl uninstall "$SIM_UDID" com.hecpdf.ipadvscode || true
             xcrun simctl install "$SIM_UDID" "$APP_PATH"

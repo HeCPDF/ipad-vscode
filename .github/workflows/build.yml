@@ -199,8 +199,3 @@ jobs:
         with:
           name: simulator-test-build
           path: /tmp/derived-sim/Build/Products
-
-  test:
-    name: Simulator smoke test + UI tests
-    needs: build
-    uses: ./.github/workflows/simulator-test.yml
