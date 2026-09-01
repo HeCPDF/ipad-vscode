@@ -130,7 +130,56 @@ final class NodeRuntimeController: ObservableObject {
         setenv("XDG_CONFIG_HOME", homeURL.appendingPathComponent(".config").path, 1)
         setenv("XDG_DATA_HOME", homeURL.appendingPathComponent(".local/share").path, 1)
         setenv("XDG_CACHE_HOME", homeURL.appendingPathComponent(".cache").path, 1)
-        setenv("XDG_RUNTIME_DIR", homeURL.appendingPathComponent(".xdg-runtime").path, 1)
+        configureShortXdgRuntimeDir(homeURL.appendingPathComponent(".xdg-runtime"))
+    }
+
+    /// Fixes a real, confirmed bug found via an actual Simulator
+    /// node-stdio.log (not guessed): every extension host connection
+    /// failed with `Failed to start extension host process` /
+    /// `listen EADDRINUSE`, on the very first attempt in a freshly
+    /// created container -- a real collision was ruled out (a fresh
+    /// UUID-suffixed name every time), and the real cause turned out to
+    /// be Unix domain socket path length. `createRandomIPCHandle()`
+    /// (vscode's own `vs/base/parts/ipc/node/ipc.net.ts`) builds
+    /// `join(XDG_RUNTIME_DIR, "vscode-ipc-<uuid>.sock")`, which under
+    /// this app's real container path came out to **270 characters** on
+    /// Simulator (~194 estimated on a real device) -- both far past
+    /// Darwin's `sockaddr_un.sun_path` limit of 104 bytes (103 usable +
+    /// NUL). vscode's own code has length-safety logic for exactly this
+    /// (truncating the random suffix via `safeIpcPathLengths`), but it
+    /// wasn't taking effect for this embedded, non-`darwin`-reporting
+    /// Node build for reasons not fully root-caused here (a `Platform`
+    /// enum keying mismatch upstream in `vs/base/common/platform.ts`
+    /// remains the leading hypothesis, but wasn't confirmed against the
+    /// exact server-main.js bundle actually running) -- rather than
+    /// depend on that, this sidesteps the length limit at the source:
+    /// the app's own container path is unavoidably long (the `.../
+    /// Containers/Data/Application/<uuid>/` prefix alone is already most
+    /// of the 103-byte budget), so no absolute path under it can
+    /// reliably stay short enough. `chdir()`ing this process into
+    /// `.xdg-runtime` and exporting `XDG_RUNTIME_DIR="."` makes
+    /// `createRandomIPCHandle()`'s `join(...)` produce a short
+    /// *relative* path instead (`vscode-ipc-<uuid>.sock`, ~52 bytes) --
+    /// the kernel resolves a relative `bind()` path against this
+    /// process's actual (unrestricted-length) working directory, so the
+    /// only string that has to fit in `sun_path` is the relative part.
+    ///
+    /// A process-wide `chdir()` is a real, deliberately-considered
+    /// tradeoff: vscode's own file/workspace handling operates on
+    /// absolute paths/URIs throughout, not `process.cwd()`-relative
+    /// ones, so this isn't expected to affect anything else -- but
+    /// stated plainly since it's a global side effect on the whole
+    /// process, not a narrowly-scoped fix.
+    private func configureShortXdgRuntimeDir(_ xdgRuntimeURL: URL) {
+        guard FileManager.default.changeCurrentDirectoryPath(xdgRuntimeURL.path) else {
+            // Fall back to the long absolute path rather than silently
+            // running with an unset XDG_RUNTIME_DIR -- reproduces the
+            // known EADDRINUSE bug above, but that's still better than
+            // extension-host IPC having no runtime dir configured at all.
+            setenv("XDG_RUNTIME_DIR", xdgRuntimeURL.path, 1)
+            return
+        }
+        setenv("XDG_RUNTIME_DIR", ".", 1)
     }
 
     /// Node's own uncaught-exception handling prints to raw C stderr and
