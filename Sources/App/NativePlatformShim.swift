@@ -35,6 +35,8 @@ enum NativePlatformShim {
         source: """
         (function() {
             if (window.vscode && window.vscode.process) { return; }
+
+            // ---- process shim (isWeb/isNative flag) ----
             window.vscode = {
                 process: {
                     platform: 'darwin',
@@ -51,6 +53,79 @@ enum NativePlatformShim {
                     versions: { node: '22.0.0' },
                     type: 'renderer',
                     cwd: function () { return '/'; }
+                }
+            };
+
+            // ---- ipcRenderer shim ----
+            // Same method shape preload.ts's `globals.ipcRenderer` exposes
+            // (send/invoke/on/once/removeListener) -- see that file, lines
+            // 110-153 at the pinned commit -- so vscode's own
+            // vs/base/parts/ipc/electron-browser/ipc.electron.ts (which
+            // only ever calls send('vscode:hello'), send('vscode:message',
+            // buf), send('vscode:disconnect'), and on('vscode:message', ...))
+            // needs no changes to run against this shim.
+            //
+            // Real Electron structured-clones values across processes;
+            // WKScriptMessageHandler's postMessage only accepts
+            // JSON-safe values, so 'vscode:message' payloads are
+            // base64-encoded here and decoded back to a Uint8Array on
+            // delivery -- VSBuffer.wrap() (the caller in ipc.electron.ts)
+            // accepts a Uint8Array directly, matching the browser-side
+            // VSBuffer implementation.
+            //
+            // `invoke` has no native responder yet (see
+            // VSCodeIPCBridge.swift's doc comment on where one would
+            // attach) -- always rejects, deliberately, rather than
+            // hanging forever silently.
+            var vscodeIPCListeners = {};
+            window.__ipadVSCodeIPCDeliver = function (base64) {
+                var binary = atob(base64);
+                var bytes = new Uint8Array(binary.length);
+                for (var i = 0; i < binary.length; i++) { bytes[i] = binary.charCodeAt(i); }
+                var fns = vscodeIPCListeners['vscode:message'] || [];
+                fns.slice().forEach(function (fn) { fn({}, bytes); });
+            };
+            function ipadVSCodeBytesToBase64(bytes) {
+                var arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+                var binary = '';
+                for (var i = 0; i < arr.length; i++) { binary += String.fromCharCode(arr[i]); }
+                return btoa(binary);
+            }
+            window.vscode.ipcRenderer = {
+                send: function (channel) {
+                    var args = Array.prototype.slice.call(arguments, 1);
+                    var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.vscodeIPCTransport;
+                    if (!handler) { return; }
+                    if (channel === 'vscode:hello') {
+                        handler.postMessage({ kind: 'hello' });
+                    } else if (channel === 'vscode:message') {
+                        handler.postMessage({ kind: 'message', data: ipadVSCodeBytesToBase64(args[0]) });
+                    } else if (channel === 'vscode:disconnect') {
+                        handler.postMessage({ kind: 'disconnect' });
+                    }
+                    // Any other channel: no native responder exists yet
+                    // (this shim only implements the raw transport three
+                    // channels above, not a generic passthrough) --
+                    // silently dropped rather than thrown, matching how a
+                    // real but unhandled IPC send behaves (no listener,
+                    // no error).
+                },
+                invoke: function (channel) {
+                    return Promise.reject(new Error('ipcRenderer.invoke(\\'' + channel + '\\'): no native IPC server implemented yet -- see VSCodeIPCBridge.swift'));
+                },
+                on: function (channel, listener) {
+                    (vscodeIPCListeners[channel] = vscodeIPCListeners[channel] || []).push(listener);
+                    return this;
+                },
+                once: function (channel, listener) {
+                    var self = this;
+                    function wrapped() { self.removeListener(channel, wrapped); listener.apply(null, arguments); }
+                    return this.on(channel, wrapped);
+                },
+                removeListener: function (channel, listener) {
+                    var arr = vscodeIPCListeners[channel];
+                    if (arr) { var i = arr.indexOf(listener); if (i >= 0) { arr.splice(i, 1); } }
+                    return this;
                 }
             };
         })();
