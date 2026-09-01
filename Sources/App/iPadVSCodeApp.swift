@@ -50,32 +50,38 @@ struct iPadVSCodeApp: App {
             // mechanism (a normal, fully-trusted function call, not a
             // simulated keypress).
             //
-            // Still deliberately NOT given `.keyboardShortcut(...)`
-            // modifiers, even though the reliability concern that
-            // originally motivated this is gone (this isn't simulated
-            // input anymore): binding one here would make SwiftUI's menu
-            // system intercept the real hardware keypress before it ever
-            // reaches the webview, forcing it to always run this fixed
-            // command — which is wrong the moment the user has remapped
-            // that physical key to something else inside vscode itself.
-            // Leaving it unbound means a real keypress keeps going through
-            // vscode's own (possibly user-customized) keybinding
-            // resolution untouched; only a mouse/trackpad/tap click on the
-            // menu item — which has no keybinding to respect in the first
-            // place — goes through this bridge.
+            // Given real `.keyboardShortcut(...)` modifiers, Electron-style:
+            // confirmed on-device that leaving them unbound (the original
+            // design here — see git history) doesn't just fall back to
+            // vscode's own key handling, it makes the shortcut do *nothing*
+            // at all. This matches how Electron VSCode actually works: the
+            // OS-level menu accelerator (Cmd+S etc.) is what fires the
+            // command, intercepted before the keystroke ever reaches the
+            // renderer/webview — not passthrough. The real, accepted
+            // tradeoff versus real Electron VSCode: these are hardcoded to
+            // vscode's *default* keybinding for each command, not kept in
+            // sync with the user's own keybindings.json the way Electron
+            // VSCode's menu accelerators are (that would need a live
+            // channel back from vscode's keybinding service into this
+            // native layer, not attempted here) — so a user who has
+            // remapped one of these commands' keys inside vscode will find
+            // the native menu item still uses the original default key.
             CommandGroup(after: .saveItem) {
                 Button("Save") {
                     menuBridge.pendingCommand = .save
                 }
+                .keyboardShortcut("s", modifiers: .command)
             }
 
             CommandGroup(replacing: .undoRedo) {
                 Button("Undo") {
                     menuBridge.pendingCommand = .undo
                 }
+                .keyboardShortcut("z", modifiers: .command)
                 Button("Redo") {
                     menuBridge.pendingCommand = .redo
                 }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
             }
 
             CommandGroup(after: .textEditing) {
@@ -83,36 +89,44 @@ struct iPadVSCodeApp: App {
                 Button("Find") {
                     menuBridge.pendingCommand = .find
                 }
+                .keyboardShortcut("f", modifiers: .command)
                 Button("Find in Files…") {
                     menuBridge.pendingCommand = .findInFiles
                 }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
             }
 
             CommandMenu("View") {
                 Button("Command Palette…") {
                     menuBridge.pendingCommand = .commandPalette
                 }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
                 Button("Explorer") {
                     menuBridge.pendingCommand = .explorer
                 }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
                 Button("Toggle Sidebar") {
                     menuBridge.pendingCommand = .toggleSidebar
                 }
+                .keyboardShortcut("b", modifiers: .command)
                 Button("Toggle Terminal") {
                     menuBridge.pendingCommand = .toggleTerminal
                 }
+                .keyboardShortcut("`", modifiers: .control)
             }
 
             CommandMenu("Go") {
                 Button("Go to File…") {
                     menuBridge.pendingCommand = .goToFile
                 }
+                .keyboardShortcut("p", modifiers: .command)
             }
 
             CommandMenu("Terminal") {
                 Button("New Terminal") {
                     menuBridge.pendingCommand = .newTerminal
                 }
+                .keyboardShortcut("`", modifiers: [.control, .shift])
             }
         }
     }
