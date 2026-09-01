@@ -46,6 +46,16 @@ jobs:
         with:
           node-version-file: vscode-src/.nvmrc
 
+      # Real, source-confirmed list (not guessed): vscode's own
+      # .devcontainer/install-vscode.sh installs exactly these three
+      # (plus `code-insiders`, irrelevant here) before `npm ci` on
+      # Debian/Ubuntu. Without them, `npm ci` fails building the
+      # `kerberos` native module (an extension dependency, unrelated to
+      # the electron-browser bundle we actually want) -- confirmed by
+      # running this workflow without this step first.
+      - name: Install vscode's own Linux native-module build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev libxkbfile-dev libkrb5-dev
+
       - name: npm ci (skip Electron's own binary download -- unrelated to the desktop bundle task, see workflow header)
         working-directory: vscode-src
         env:
