@@ -323,17 +323,45 @@ final class NodeRuntimeController: ObservableObject {
         // defaults, passing the negation explicitly here (a standard
         // V8 boolean-flag negation, confirmed accepted by
         // `deps/v8/src/flags/flags.cc`'s own `--no<flag>`/`--no-<flag>`
-        // parsing) overrides it back on -- restoring both real JIT and
-        // `WebAssembly` for Simulator-based verification, without
-        // needing to rebuild nodejs-mobile itself just to drop the
-        // build script's own default. The real device path is left
-        // alone here (see the `--jitless` branch above): whether to
-        // also stop baking `--v8-options=--jitless` into the *device*
-        // build, now that the JIT26/TXM `OS::SetPermissions` patch
-        // exists to gate real allocation attempts, is a separate,
-        // higher-risk decision this project isn't making blind on a
-        // device it can't test on.
-        arguments.insert("--no-jitless", at: 1)
+        // parsing) overrides jitless back off, restoring real JIT for
+        // Simulator-based verification, without needing to rebuild
+        // nodejs-mobile itself just to drop the build script's own
+        // default.
+        //
+        // A second real bug found via re-verifying THIS fix in
+        // Simulator: turning jitless off also brings `expose_wasm`
+        // back to its own separate true default (flag-definitions.h:
+        // `DEFINE_BOOL(expose_wasm, true, ...)`), and on this embedded
+        // V8 build, actually using WebAssembly is fatal to the whole
+        // process, not just one extension host Worker --
+        // node-stdio.log captured a hard `node::Abort()` with `FATAL
+        // ERROR: WasmCodeManager::Commit: Cannot make pre-reserved
+        // region writable Allocation failed - process out of memory`,
+        // the moment something (the same undici/llhttp WASM module
+        // that used to just throw "WebAssembly is not defined")
+        // actually tried to compile and run. That's strictly worse for
+        // "no major bugs" than the contained, per-connection error it
+        // replaced -- a full process abort kills the whole app, not
+        // just one extension host connection attempt. `expose_wasm`
+        // and `jitless` are independent flags (only a one-way
+        // `DEFINE_NEG_IMPLICATION(jitless, ...)`-style default, not a
+        // hard link), so `--no-expose-wasm` here keeps WebAssembly off
+        // on its own while leaving real JIT for everything else
+        // enabled -- deliberately reverting to the already-diagnosed,
+        // contained "WebAssembly is not defined" extension-host-Worker
+        // failure rather than shipping a fatal whole-process crash.
+        // Whether nodejs-mobile's embedded V8 build can support
+        // WebAssembly's memory-protection-toggling at all (a real
+        // investigation, not attempted here) is now a separate,
+        // explicitly-deferred gap, not a silently-accepted one.
+        //
+        // The real device path is left alone here (see the `--jitless`
+        // branch above): whether to also stop baking
+        // `--v8-options=--jitless` into the *device* build, now that
+        // the JIT26/TXM `OS::SetPermissions` patch exists to gate real
+        // allocation attempts, is a separate, higher-risk decision this
+        // project isn't making blind on a device it can't test on.
+        arguments.insert(contentsOf: ["--no-jitless", "--no-expose-wasm"], at: 1)
         #endif
         if entryScript == bundledEntry {
             arguments += [
