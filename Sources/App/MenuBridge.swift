@@ -14,66 +14,54 @@ final class MenuBridge: ObservableObject {
     @Published var addFolderToWorkspaceRequested = false
 
     /// Set by a native menu-bar item's action (a mouse/trackpad/tap click on
-    /// the item, not a real hardware keypress) and consumed by ContentView,
-    /// which owns the WKWebView and simulates the matching vscode keybinding
-    /// inside it via `SimulatedKeyCommand.dispatchScript` -- see that for
-    /// exactly why this indirection exists (real hardware keypresses are
-    /// deliberately NOT routed through here) and its "unverified" caveat.
-    @Published var pendingKeyCommand: SimulatedKeyCommand?
+    /// the item) and consumed by ContentView, which owns the WKWebView and
+    /// runs `NativeMenuCommand.dispatchScript` in it. See that type's doc
+    /// comment for the whole mechanism.
+    @Published var pendingCommand: NativeMenuCommand?
 }
 
-/// A vscode keybinding to simulate inside the webview, matching the
-/// KeyboardEvent fields vscode's own keybinding service reads. `key`/`code`
-/// follow the DOM KeyboardEvent spec (e.g. key: "s", code: "KeyS"; key:
-/// "F1", code: "F1" for function keys) -- see `dispatchScript` below.
-struct SimulatedKeyCommand: Equatable {
-    let key: String
-    let code: String
-    var metaKey = false
-    var shiftKey = false
-    var altKey = false
-    var ctrlKey = false
+/// A real vscode command, invoked by ID through the trusted bridge
+/// `code-server/patches/ios-command-bridge.diff` exposes on `mainWindow`
+/// (`__ipadVSCodeExecuteCommand`), not by simulating the keybinding that
+/// would normally trigger it. That patch's own header has the full
+/// reasoning; short version: vscode's keybinding service listens for real
+/// `keydown` DOM events and simulating one is both unverifiable (an
+/// untrusted synthetic KeyboardEvent might just get filtered out) and
+/// wrong the moment a user remaps the command's key in their own
+/// keybindings.json. Calling `ICommandService.executeCommand(id)` directly
+/// is a normal, fully-trusted function call — no synthetic input event
+/// involved at all — and doesn't care what key (if any) the command is
+/// bound to.
+struct NativeMenuCommand: Equatable {
+    let commandId: String
 
-    static func meta(_ key: String, code: String, shift: Bool = false) -> SimulatedKeyCommand {
-        SimulatedKeyCommand(key: key, code: code, metaKey: true, shiftKey: shift)
-    }
+    static let save = NativeMenuCommand(commandId: "workbench.action.files.save")
+    static let undo = NativeMenuCommand(commandId: "undo")
+    static let redo = NativeMenuCommand(commandId: "redo")
+    static let find = NativeMenuCommand(commandId: "actions.find")
+    static let findInFiles = NativeMenuCommand(commandId: "workbench.action.findInFiles")
+    static let commandPalette = NativeMenuCommand(commandId: "workbench.action.showCommands")
+    static let explorer = NativeMenuCommand(commandId: "workbench.view.explorer")
+    static let toggleSidebar = NativeMenuCommand(commandId: "workbench.action.toggleSidebarVisibility")
+    static let toggleTerminal = NativeMenuCommand(commandId: "workbench.action.terminal.toggleTerminal")
+    static let newTerminal = NativeMenuCommand(commandId: "workbench.action.terminal.new")
+    static let goToFile = NativeMenuCommand(commandId: "workbench.action.quickOpen")
 
-    static func ctrl(_ key: String, code: String, shift: Bool = false) -> SimulatedKeyCommand {
-        SimulatedKeyCommand(key: key, code: code, shiftKey: shift, ctrlKey: true)
-    }
-
-    /// UNVERIFIED on a real device (nothing to test a WKWebView keyboard
-    /// event against outside one -- see README.md's verification-tier
-    /// caveats elsewhere in this project). vscode's keybinding service
-    /// listens for real `keydown` DOM events, not any exposed
-    /// "run this command by ID" JS API, so this dispatches a synthetic one
-    /// with the same key/code/modifier fields a real keypress would carry.
-    /// The real open question: whether vscode's listener checks
-    /// `event.isTrusted` (`false` for anything JS-dispatched, `true` only
-    /// for genuine hardware/OS input) and silently ignores this. If these
-    /// native menu items turn out to do nothing when tapped, that's the
-    /// first thing to check -- there is no library-level workaround short
-    /// of vscode exposing a real command-execution API, which it doesn't.
-    /// Dispatched on `window` (not `document.activeElement`), matching
-    /// where vscode's own global keybinding listener attaches.
+    /// `window.__ipadVSCodeExecuteCommand` only exists once
+    /// `Workbench.startup()` has run (see the patch), which is well before
+    /// a user could reach the native menu bar in practice, but the
+    /// existence check keeps a click during that narrow startup window a
+    /// silent no-op instead of a JS exception logged to nowhere the user
+    /// can see.
     var dispatchScript: String {
-        let payload: [String: Any] = [
-            "key": key,
-            "code": code,
-            "metaKey": metaKey,
-            "shiftKey": shiftKey,
-            "altKey": altKey,
-            "ctrlKey": ctrlKey,
-        ]
-        let json = (try? JSONSerialization.data(withJSONObject: payload))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        let json = (try? JSONSerialization.data(withJSONObject: [commandId]))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         return """
         (function() {
-            var opts = \(json);
-            opts.bubbles = true;
-            opts.cancelable = true;
-            window.dispatchEvent(new KeyboardEvent('keydown', opts));
-            window.dispatchEvent(new KeyboardEvent('keyup', opts));
+            var args = \(json);
+            if (typeof window.__ipadVSCodeExecuteCommand === 'function') {
+                window.__ipadVSCodeExecuteCommand(args[0]);
+            }
         })();
         """
     }
