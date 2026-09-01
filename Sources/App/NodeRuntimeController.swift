@@ -390,6 +390,25 @@ final class NodeRuntimeController: ObservableObject {
                 // --vscode-option escape hatch (parseVscodeOptions in
                 // src/node/cli.ts) rather than patching code-server itself.
                 "--vscode-option", "force-disable-user-env",
+                // Real bug found via the Simulator screenshot this
+                // project's own bug-hunting captures (launch-*.png): the
+                // Welcome page's big heading read "code-server" -- not a
+                // rendering glitch, just code-server's own real, unmodified
+                // upstream branding, since nothing here was overriding it.
+                // Traced to source: gettingStarted.ts's
+                // `$('h1.product-name.caption', {}, this.productService.nameLong)`
+                // (the Welcome page's H1) reads `productService.nameLong`,
+                // which code-server's own `app-name.diff` patch already
+                // wires up to a `--app-name` CLI flag (setting
+                // `nameShort`/`nameLong` in the per-request product
+                // configuration `webClientServer.ts` injects into the web
+                // client's bootstrap) -- that patch was already in this
+                // project's patch series, just never actually invoked from
+                // here. Matches the app's own project name (project.yml's
+                // `name: iPadVSCode`), not left as the implementation
+                // detail ("code-server") a user shouldn't need to know
+                // about.
+                "--app-name", "iPad VSCode",
             ]
         }
 
