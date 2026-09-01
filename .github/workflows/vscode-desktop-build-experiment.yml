@@ -69,6 +69,19 @@ jobs:
           rm -rf node_modules/electron/dist
           echo "removed node_modules/electron/dist; bundle step below must not need it"
 
+      # Real gulp's `core-ci`/`vscode-*` tasks always run copyCodiconsTask
+      # (build/lib/compilation.ts) before bundling -- it's a plain file
+      # copy, not gulp-specific logic, so replicated directly here since
+      # we're calling build/next/index.ts's transpile/bundle tasks
+      # standalone rather than through gulp's task series. Without it
+      # esbuild fails to resolve codicon.css's relative `./codicon.ttf`
+      # (confirmed by running this workflow without this step first).
+      - name: Copy codicon.ttf into place (real gulp task, replicated here since we bypass gulp)
+        working-directory: vscode-src
+        run: |
+          mkdir -p src/vs/base/browser/ui/codicons/codicon
+          cp node_modules/@vscode/codicons/dist/codicon.ttf src/vs/base/browser/ui/codicons/codicon/codicon.ttf
+
       - name: Transpile (out-build)
         working-directory: vscode-src
         run: node --experimental-strip-types build/next/index.ts transpile --out out-build
