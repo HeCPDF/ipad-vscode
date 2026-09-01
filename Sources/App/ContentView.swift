@@ -51,6 +51,21 @@ struct ContentView: View {
                 webView.load(URLRequest(url: RuntimeConfig.loopbackURL))
             }
         }
+        .onAppear {
+            // CI-only hook: simulator-test.yml's UI test has no way to
+            // reach "Experimental: Native Workbench…" through the real
+            // menu bar (that item deliberately has no keyboard shortcut —
+            // see iPadVSCodeApp.swift), and iPad menu-bar UI automation is
+            // its own can of worms. This launch argument (set only by
+            // NativeWorkbenchUITests.swift) opens the same
+            // fullScreenCover the menu item does, so CI can actually
+            // exercise NativeWorkbenchExperimentView and capture real
+            // NativeConsoleForwarder evidence instead of relying on a
+            // human tapping the menu by hand.
+            if ProcessInfo.processInfo.arguments.contains("-UITestOpenNativeWorkbench") {
+                menuBridge.nativeExperimentRequested = true
+            }
+        }
         .onChange(of: menuBridge.openFolderRequested) { _, requested in
             guard requested else { return }
             pickerMode = .openAsPrimaryWorkspace

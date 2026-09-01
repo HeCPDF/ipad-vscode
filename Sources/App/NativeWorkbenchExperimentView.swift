@@ -36,6 +36,11 @@ struct NativeWorkbenchExperimentView: View {
     // Relays ipcBridge's frames to/from code-server's real
     // /ipad-vscode-ipc WebSocket route — see that class's doc comment.
     @State private var ipcRelay = VSCodeIPCWebSocketRelay()
+    // Forwards this webview's JS console output and uncaught errors into
+    // os.Logger (see NativeConsoleForwarder's doc comment) -- the only way
+    // to get real evidence of what the workbench bundle actually does on
+    // first render, since WKWebView itself exposes no console delegate.
+    private let consoleForwarder = NativeConsoleForwarder()
 
     var body: some View {
         NavigationStack {
@@ -68,13 +73,14 @@ struct NativeWorkbenchExperimentView: View {
     private func setUpIfNeeded() {
         guard webView == nil, unavailableReason == nil else { return }
         guard let handler = VSCodeFileSchemeHandler.makeIfBundleAvailable() else {
-            unavailableReason = "Sources/App/Resources/vscode-desktop isn't in this build's app bundle. Needs the CI fetch step from vscode-desktop-build-experiment.yml's artifact wired into build.yml first (not done yet), or an xcodebuild archive (not a plain build) locally — see project.yml's comment on resource-copy phases."
+            unavailableReason = "Sources/App/Resources/vscode-desktop isn't in this build's app bundle. build.yml's \"Fetch vscode desktop bundle\" step is best-effort (continue-on-error) and only populates this from a successful vscode-desktop-build-experiment.yml run on main-yyjpt0 — if that workflow hasn't succeeded yet, or this is a local build, do an xcodebuild archive (not a plain build) locally after running that workflow yourself — see project.yml's comment on resource-copy phases."
             return
         }
 
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(handler, forURLScheme: VSCodeFileSchemeHandler.scheme)
         configuration.userContentController.addUserScript(NativePlatformShim.userScript)
+        consoleForwarder.attach(to: configuration)
 
         let newWebView = WKWebView(frame: .zero, configuration: configuration)
         let bridge = VSCodeIPCBridge()
