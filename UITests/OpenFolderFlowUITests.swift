@@ -1,9 +1,14 @@
 import XCTest
 
-/// Runs in CI against the iOS Simulator (see .github/workflows/build.yml).
-/// Confirms the one UI flow that doesn't depend on code-server's Node
-/// runtime actually starting — code-server startup isn't exercised at all
-/// here (see README.md for why: a real device is needed for that).
+/// Runs in CI against the iOS Simulator (see .github/workflows/build.yml
+/// and simulator-test.yml). This test itself only exercises the Open
+/// Folder shortcut/picker flow, but code-server's real Node runtime
+/// starts as part of ordinary app launch regardless -- simulator-test.yml
+/// captures its node-stdio.log independently of what this test does, and
+/// that log is the real evidence source for extension-host/startup bugs
+/// (see README.md's "Extension host" section) -- Simulator is this
+/// project's actual verification bar (a real device isn't available in
+/// this pipeline), not a fallback for what can't be checked here.
 final class OpenFolderFlowUITests: XCTestCase {
     /// The editor no longer gates itself behind a folder being picked (it
     /// loads code-server's own welcome page immediately, matching real
