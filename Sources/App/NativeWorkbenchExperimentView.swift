@@ -50,7 +50,7 @@ struct NativeWorkbenchExperimentView: View {
 
     private func setUpIfNeeded() {
         guard webView == nil, unavailableReason == nil else { return }
-        guard let handler = VSCodeFileSchemeHandler() else {
+        guard let handler = VSCodeFileSchemeHandler.makeIfBundleAvailable() else {
             unavailableReason = "Sources/App/Resources/vscode-desktop isn't in this build's app bundle. Needs the CI fetch step from vscode-desktop-build-experiment.yml's artifact wired into build.yml first (not done yet), or an xcodebuild archive (not a plain build) locally — see project.yml's comment on resource-copy phases."
             return
         }

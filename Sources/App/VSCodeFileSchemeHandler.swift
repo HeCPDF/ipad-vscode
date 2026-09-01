@@ -26,17 +26,27 @@ final class VSCodeFileSchemeHandler: NSObject, WKURLSchemeHandler {
 
     private let rootPath: String
 
-    /// Fails (returns nil) if the bundled resource folder isn't present —
-    /// e.g. a build that skipped the CI fetch step, or a plain `xcodebuild
-    /// build` (not `archive`) invocation, which per project.yml's own
-    /// comment doesn't reliably run resource-copy phases. Callers should
-    /// treat that as "the native experiment isn't available in this
-    /// build," not force-unwrap.
-    override init?() {
+    private init(rootPath: String) {
+        self.rootPath = rootPath
+        super.init()
+    }
+
+    /// A static factory rather than a failable `init?()`: Swift doesn't
+    /// allow overriding NSObject's non-failable `init()` with a failable
+    /// one (they have the same signature, so it counts as an override,
+    /// and failable-overriding-non-failable is disallowed — a real
+    /// compile error hit here, not a style choice).
+    ///
+    /// Returns nil if the bundled resource folder isn't present — e.g. a
+    /// build that skipped the CI fetch step, or a plain `xcodebuild build`
+    /// (not `archive`) invocation, which per project.yml's own comment
+    /// doesn't reliably run resource-copy phases. Callers should treat
+    /// that as "the native experiment isn't available in this build," not
+    /// force-unwrap.
+    static func makeIfBundleAvailable() -> VSCodeFileSchemeHandler? {
         let path = Bundle.main.bundlePath + "/vscode-desktop"
         guard FileManager.default.fileExists(atPath: path) else { return nil }
-        self.rootPath = path
-        super.init()
+        return VSCodeFileSchemeHandler(rootPath: path)
     }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
