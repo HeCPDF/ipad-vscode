@@ -43,72 +43,75 @@ struct iPadVSCodeApp: App {
                 .keyboardShortcut("o", modifiers: [.command, .shift])
             }
 
-            // Everything below dispatches a simulated vscode keybinding
-            // into the webview instead of doing anything itself — see
-            // MenuBridge.SimulatedKeyCommand.dispatchScript for the whole
-            // mechanism and its real "does vscode ignore untrusted
-            // KeyboardEvents" open question, unverified on-device as of
-            // this writing.
+            // Everything below invokes a real vscode command by ID through
+            // the trusted bridge code-server/patches/ios-command-bridge.diff
+            // exposes on the webview's `window` — see
+            // MenuBridge.NativeMenuCommand's doc comment for the whole
+            // mechanism (a normal, fully-trusted function call, not a
+            // simulated keypress).
             //
-            // Deliberately NOT given `.keyboardShortcut(...)` modifiers:
-            // doing so would make SwiftUI's menu system intercept the real
-            // hardware keypress before it ever reaches the webview, which
-            // — for exactly these commands — already works today via plain
-            // passthrough (WKWebView delivers real hardware key events to
-            // the page as trusted DOM events, no native involvement
-            // needed). Binding a shortcut here would trade a
-            // known-working, trusted path for an unverified, untrusted
-            // one. These menu items exist purely for mouse/trackpad/tap
-            // discoverability — a real keypress skips this file entirely.
+            // Still deliberately NOT given `.keyboardShortcut(...)`
+            // modifiers, even though the reliability concern that
+            // originally motivated this is gone (this isn't simulated
+            // input anymore): binding one here would make SwiftUI's menu
+            // system intercept the real hardware keypress before it ever
+            // reaches the webview, forcing it to always run this fixed
+            // command — which is wrong the moment the user has remapped
+            // that physical key to something else inside vscode itself.
+            // Leaving it unbound means a real keypress keeps going through
+            // vscode's own (possibly user-customized) keybinding
+            // resolution untouched; only a mouse/trackpad/tap click on the
+            // menu item — which has no keybinding to respect in the first
+            // place — goes through this bridge.
             CommandGroup(after: .saveItem) {
                 Button("Save") {
-                    menuBridge.pendingKeyCommand = .meta("s", code: "KeyS")
+                    menuBridge.pendingCommand = .save
                 }
             }
 
             CommandGroup(replacing: .undoRedo) {
                 Button("Undo") {
-                    menuBridge.pendingKeyCommand = .meta("z", code: "KeyZ")
+                    menuBridge.pendingCommand = .undo
                 }
                 Button("Redo") {
-                    menuBridge.pendingKeyCommand = .meta("z", code: "KeyZ", shift: true)
+                    menuBridge.pendingCommand = .redo
                 }
             }
 
             CommandGroup(after: .textEditing) {
                 Divider()
                 Button("Find") {
-                    menuBridge.pendingKeyCommand = .meta("f", code: "KeyF")
+                    menuBridge.pendingCommand = .find
                 }
                 Button("Find in Files…") {
-                    menuBridge.pendingKeyCommand = .meta("f", code: "KeyF", shift: true)
+                    menuBridge.pendingCommand = .findInFiles
                 }
             }
 
             CommandMenu("View") {
                 Button("Command Palette…") {
-                    menuBridge.pendingKeyCommand = .meta("p", code: "KeyP", shift: true)
+                    menuBridge.pendingCommand = .commandPalette
                 }
                 Button("Explorer") {
-                    menuBridge.pendingKeyCommand = .meta("e", code: "KeyE", shift: true)
+                    menuBridge.pendingCommand = .explorer
                 }
                 Button("Toggle Sidebar") {
-                    menuBridge.pendingKeyCommand = .meta("b", code: "KeyB")
+                    menuBridge.pendingCommand = .toggleSidebar
                 }
                 Button("Toggle Terminal") {
-                    menuBridge.pendingKeyCommand = .ctrl("`", code: "Backquote")
+                    menuBridge.pendingCommand = .toggleTerminal
                 }
             }
 
             CommandMenu("Go") {
                 Button("Go to File…") {
-                    menuBridge.pendingKeyCommand = .meta("p", code: "KeyP")
+                    menuBridge.pendingCommand = .goToFile
                 }
             }
 
             CommandMenu("Terminal") {
                 Button("New Terminal") {
-                    menuBridge.pendingKeyCommand = .ctrl("`", code: "Backquote", shift: true)
+                    menuBridge.pendingCommand = .newTerminal
                 }
             }
         }
