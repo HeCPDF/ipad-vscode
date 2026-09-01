@@ -137,7 +137,16 @@ jobs:
 
             xcrun simctl launch "$SIM_UDID" com.hecpdf.ipadvscode \
               || echo "::warning::simctl launch failed on iteration $i -- continuing for diagnostics"
-            sleep 8
+            # 8s was only ever long enough to see the extension host's
+            # *first* connection attempt land -- every bug found so far
+            # in this window was a startup-time crash, never anything
+            # that only shows up once extensions have had real time to
+            # activate. 45s gives code-server, the extension host, and
+            # built-in extensions genuine room to finish starting up
+            # before this snapshot, so a real activation-time bug (as
+            # opposed to a startup-time one) has an actual chance to
+            # surface here instead of being missed by construction.
+            sleep 45
             xcrun simctl io "$SIM_UDID" screenshot "artifacts/launch-$i.png" || true
             xcrun simctl spawn "$SIM_UDID" log show --predicate 'subsystem CONTAINS "com.hecpdf.ipadvscode"' --last 1m > "artifacts/simulator-log-$i-pre-uitest.txt" || true
 

@@ -24,8 +24,15 @@ final class OpenFolderFlowUITests: XCTestCase {
         // No specific element to wait on before the shortcut fires — the
         // WKWebView content (code-server's welcome page) isn't something
         // XCUITest can see into. A fixed settle delay is the pragmatic
-        // choice here.
-        Thread.sleep(forTimeInterval: 3)
+        // choice here. Long enough to give code-server's Node runtime and
+        // the extension host real time to finish starting up (every real
+        // bug found via node-stdio.log so far was a startup-time crash;
+        // a short delay here only ever proved the *first* few seconds
+        // were clean, not that startup actually completes) -- this is
+        // also the delay simulator-test.yml's post-UI-test log capture
+        // effectively measures, since that capture happens right after
+        // this test (and the app.launch() below) finish.
+        Thread.sleep(forTimeInterval: 40)
         app.typeKey("o", modifierFlags: .command)
 
         // Give the system sheet time to animate in before inspecting.
