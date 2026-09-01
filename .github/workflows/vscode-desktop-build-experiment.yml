@@ -1,0 +1,94 @@
+name: vscode desktop build experiment
+
+# Validates the core claim behind dropping code-server + WebView in favor of
+# a real Electron-desktop-style port: that vscode's own electron-browser
+# workbench bundle (the actual desktop UI, as opposed to the
+# vscode-reh-web target code-server currently builds) can be produced with
+# plain esbuild/TypeScript tooling and has NO structural dependency on the
+# Electron runtime itself -- confirmed by reading build/next/index.ts and
+# build/lib/esbuild.ts source, not yet confirmed by actually running it.
+# Electron only enters vscode's own pipeline at packageTask() (assembling
+# the final .app/.exe), a step this project never runs.
+#
+# Runs on ubuntu (not macos-26 like build.yml) because this is pure
+# Node/TypeScript bundling with no Xcode/iOS dependency at all -- the
+# whole point is proving this step doesn't need anything platform-specific.
+#
+# Deliberately independent of build.yml and of the code-server fork: this
+# clones microsoft/vscode directly, at the same pinned commit already used
+# elsewhere in this project for patch verification
+# (08d4889f9ec4a1685d257b9b95de036c8e1ce1e5), bypassing code-server's
+# submodule/build wrapping entirely.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main-yyjpt0]
+    paths:
+      - '.github/workflows/vscode-desktop-build-experiment.yml'
+
+env:
+  VSCODE_PIN: 08d4889f9ec4a1685d257b9b95de036c8e1ce1e5
+
+jobs:
+  build:
+    name: Bundle vscode's electron-browser workbench without Electron present
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone vscode at the pinned commit
+        run: |
+          git clone https://github.com/microsoft/vscode.git vscode-src
+          cd vscode-src
+          git fetch --depth 1 origin "$VSCODE_PIN"
+          git checkout "$VSCODE_PIN"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: vscode-src/.nvmrc
+
+      - name: npm ci (skip Electron's own binary download -- unrelated to the desktop bundle task, see workflow header)
+        working-directory: vscode-src
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: npm ci
+
+      - name: Prove the claim -- remove any electron binary so the bundle step cannot secretly depend on it
+        working-directory: vscode-src
+        run: |
+          rm -rf node_modules/electron/dist
+          echo "removed node_modules/electron/dist; bundle step below must not need it"
+
+      - name: Transpile (out-build)
+        working-directory: vscode-src
+        run: node --experimental-strip-types build/next/index.ts transpile --out out-build
+
+      - name: Bundle desktop target (out-vscode-min)
+        working-directory: vscode-src
+        run: node --experimental-strip-types build/next/index.ts bundle --out out-vscode-min --target desktop --minify --mangle-privates --nls
+
+      - name: Verify the electron-browser workbench bundle exists and is self-contained
+        working-directory: vscode-src
+        run: |
+          set -e
+          for f in \
+            out-vscode-min/vs/code/electron-browser/workbench/workbench.html \
+            out-vscode-min/vs/code/electron-browser/workbench/workbench.js \
+            out-vscode-min/vs/workbench/workbench.desktop.main.js \
+            out-vscode-min/vs/workbench/workbench.desktop.main.css \
+          ; do
+            if [ ! -s "$f" ]; then
+              echo "::error::expected bundle output missing or empty: $f"
+              exit 1
+            fi
+            echo "OK: $f ($(wc -c < "$f") bytes)"
+          done
+
+      - name: Upload the bundle for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-desktop-bundle
+          path: |
+            vscode-src/out-vscode-min/vs/code/electron-browser/workbench/
+            vscode-src/out-vscode-min/vs/workbench/workbench.desktop.main.*
+          retention-days: 7
