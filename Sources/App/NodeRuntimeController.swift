@@ -283,6 +283,57 @@ final class NodeRuntimeController: ObservableObject {
         // JIT-enabled V8 actually does, for no real benefit, so it's
         // conditional on a real device build instead of unconditional.
         arguments.insert("--jitless", at: 1)
+        #else
+        // Real bug found via an actual Simulator node-stdio.log (not
+        // guessed): every extension host connection hit
+        // "ReferenceError: WebAssembly is not defined" (from
+        // @vscode/proxy-agent -> undici -> its own bundled
+        // node:internal/deps/undici's lazy llhttp-via-WASM loader),
+        // crashing the Worker even after the File/crypto polyfills
+        // fixed the two bugs before it.
+        //
+        // Root cause, traced all the way to source rather than
+        // guessed: nodejs-mobile's own iOS build script
+        // (tools/ios_framework_prepare.sh, HeCPDF/nodejs-mobile fork)
+        // passes `--v8-options=--jitless` to `configure` for every iOS
+        // target -- device AND both Simulator archs alike. That becomes
+        // node.gyp's `node_v8_options` variable, compiled in as the
+        // `NODE_V8_OPTIONS` macro, applied via
+        // `V8::SetFlagsFromString(NODE_V8_OPTIONS, ...)` in
+        // `InitializeNodeWithArgs` (src/node.cc) *before*
+        // `V8::SetFlagsFromCommandLine()` runs -- node.cc's own comment
+        // there says this ordering is deliberate specifically so a
+        // baked-in default flag CAN be overridden by passing its
+        // negation on the actual CLI. And V8 itself documents exactly
+        // why this manifests as a missing WebAssembly global:
+        // `deps/v8/src/flags/flag-definitions.h` states outright
+        // "--jitless also implies --no-expose-wasm, see
+        // InitializeOncePerProcessImpl" -- jitless mode doesn't just
+        // skip Turbofan/Sparkplug, it turns off exposing `WebAssembly`
+        // entirely, since even baseline Wasm compilation needs some
+        // code generation jitless mode refuses to do.
+        //
+        // So this app's own `--jitless`/no-`--jitless` choice above
+        // (added for the *now-superseded* white-screen-crash
+        // hypothesis, and left in as the real-device default) was
+        // never actually the deciding factor on Simulator -- jitless
+        // was already unconditionally baked into the binary itself,
+        // regardless of what this Swift code passed on argv. Since V8
+        // applies its own CLI-parsed flags after the baked-in
+        // defaults, passing the negation explicitly here (a standard
+        // V8 boolean-flag negation, confirmed accepted by
+        // `deps/v8/src/flags/flags.cc`'s own `--no<flag>`/`--no-<flag>`
+        // parsing) overrides it back on -- restoring both real JIT and
+        // `WebAssembly` for Simulator-based verification, without
+        // needing to rebuild nodejs-mobile itself just to drop the
+        // build script's own default. The real device path is left
+        // alone here (see the `--jitless` branch above): whether to
+        // also stop baking `--v8-options=--jitless` into the *device*
+        // build, now that the JIT26/TXM `OS::SetPermissions` patch
+        // exists to gate real allocation attempts, is a separate,
+        // higher-risk decision this project isn't making blind on a
+        // device it can't test on.
+        arguments.insert("--no-jitless", at: 1)
         #endif
         if entryScript == bundledEntry {
             arguments += [
