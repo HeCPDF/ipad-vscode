@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import os
 
 /// Isolated screen for testing the Electron-desktop-port hypothesis (see
 /// README.md's "Architecture pivot" section) without touching the app's
@@ -102,6 +103,36 @@ struct NativeWorkbenchExperimentView: View {
 private struct NativeExperimentWebView: UIViewRepresentable {
     let webView: WKWebView
 
-    func makeUIView(context: Context) -> WKWebView { webView }
+    func makeUIView(context: Context) -> WKWebView {
+        webView.navigationDelegate = context.coordinator
+        return webView
+    }
     func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    /// A scheme-handler-level failure to load workbench.html itself (a
+    /// bad artifact layout, a missing file) happens before any page JS
+    /// runs, so NativeConsoleForwarder -- which only intercepts JS already
+    /// executing on the page -- can't see it. This is the only way that
+    /// specific class of failure becomes visible in
+    /// simulator-test.yml's log capture; without it, a 404'd main
+    /// document just renders as a silent blank page with nothing recorded
+    /// anywhere. (This exact gap is what let the vs/-prefix-stripped
+    /// artifact bug go unnoticed until inspected by hand -- see
+    /// vscode-desktop-build-experiment.yml's upload-step comment.)
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        private let log = Logger(subsystem: "com.hecpdf.ipadvscode", category: "nativeworkbench-console")
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            log.error("native workbench provisional navigation failed: \(String(describing: error), privacy: .public)")
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            log.error("native workbench navigation failed: \(String(describing: error), privacy: .public)")
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            log.info("native workbench navigation finished (workbench.html served successfully)")
+        }
+    }
 }
