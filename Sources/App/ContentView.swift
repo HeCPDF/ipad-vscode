@@ -60,10 +60,10 @@ struct ContentView: View {
             isPickingFolder = true
             menuBridge.addFolderToWorkspaceRequested = false
         }
-        .onChange(of: menuBridge.pendingKeyCommand) { _, command in
+        .onChange(of: menuBridge.pendingCommand) { _, command in
             guard let command else { return }
             webView.evaluateJavaScript(command.dispatchScript)
-            menuBridge.pendingKeyCommand = nil
+            menuBridge.pendingCommand = nil
         }
         .onAppear(perform: applyMinimumWindowSize)
         .alert(
