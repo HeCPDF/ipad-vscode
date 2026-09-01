@@ -40,6 +40,34 @@ enum NativePlatformShim {
         (function() {
             if (window.vscode && window.vscode.process) { return; }
 
+            // ---- requestIdleCallback polyfill ----
+            // WebKit/Safari has never implemented requestIdleCallback --
+            // real vscode's own electron-browser bootstrap
+            // (workbench.ts's beforeImport callback) calls
+            // window.requestIdleCallback(...) unconditionally, with no
+            // feature-detection of its own (real Electron ships on
+            // Chromium, which has had it since 2018). Found via real
+            // Simulator evidence: an "unhandled promise rejection" whose
+            // stack trace pointed at exactly this call
+            // (workbench.js:408:887, confirmed by inspecting the actual
+            // bundled output). Standard, spec-shaped setTimeout-based
+            // fallback -- not vscode-specific, just filling a real
+            // WebKit API gap the same way `File`/`crypto` were polyfilled
+            // for Node 18 on the code-server side
+            // (ios-node18-globals-polyfill.diff).
+            if (typeof window.requestIdleCallback !== 'function') {
+                window.requestIdleCallback = function (callback, options) {
+                    var start = Date.now();
+                    return setTimeout(function () {
+                        callback({
+                            didTimeout: false,
+                            timeRemaining: function () { return Math.max(0, 50 - (Date.now() - start)); }
+                        });
+                    }, (options && options.timeout) || 1);
+                };
+                window.cancelIdleCallback = function (id) { clearTimeout(id); };
+            }
+
             // ---- process shim (isWeb/isNative flag) ----
             window.vscode = {
                 process: {
