@@ -124,11 +124,13 @@ final class VSCodeIPCWebSocketRelay: NSObject {
                 case .data(let data):
                     self.bridge?.send(data)
                 case .string(let text):
-                    // The wire protocol is binary-only (see
-                    // ipadVSCodeIpc.ts) — a text frame here would mean
-                    // something upstream changed shape; log rather than
-                    // silently drop.
-                    print("VSCodeIPCWebSocketRelay: unexpected text frame: \(text)")
+                    // Out-of-band JSON pushes only (see
+                    // IPCRawTransport.sendText's doc comment in
+                    // code-server/src/node/ipadVSCodeIpc.ts) — the RPC
+                    // wire protocol itself is binary-only, so a text
+                    // frame is always one of these envelopes, never an
+                    // RPC reply.
+                    self.handleOutOfBandText(text)
                 @unknown default:
                     break
                 }
@@ -137,6 +139,30 @@ final class VSCodeIPCWebSocketRelay: NSObject {
                 print("VSCodeIPCWebSocketRelay: receive failed (attempt \(self.reconnectAttempts + 1)/\(self.maxReconnectAttempts)): \(error)")
                 self.scheduleReconnect()
             }
+        }
+    }
+
+    /// Envelope shape: `{"kind": "menubarUpdate", "data": <IMenubarData>}`
+    /// (see the `menubar` channel, code-server/src/node/routes/ipadVSCodeIpc.ts).
+    /// `kind` exists so this dispatch can grow to other out-of-band push
+    /// types later without a shape change here — currently `menubarUpdate`
+    /// is the only one sent.
+    private func handleOutOfBandText(_ text: String) {
+        guard let envelope = text.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: envelope) as? [String: Any],
+            let kind = json["kind"] as? String
+        else {
+            print("VSCodeIPCWebSocketRelay: unparseable out-of-band text frame: \(text)")
+            return
+        }
+        switch kind {
+        case "menubarUpdate":
+            guard let data = json["data"],
+                let dataJSON = try? JSONSerialization.data(withJSONObject: data)
+            else { return }
+            NativeMenubarStore.shared.ingest(rawMenubarDataJSON: dataJSON)
+        default:
+            print("VSCodeIPCWebSocketRelay: unknown out-of-band push kind '\(kind)'")
         }
     }
 }
