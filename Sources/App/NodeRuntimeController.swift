@@ -207,27 +207,34 @@ final class NodeRuntimeController: ObservableObject {
 
         var arguments = [
             "node",
-            // iOS denies third-party processes the ability to mark memory
-            // pages executable at runtime (no dynamic-codesigning
-            // entitlement -- Apple grants that only in narrow cases, not
-            // to a free/Personal Team signing identity) unless the
-            // process is CS_DEBUGGED (a live debugger attached). V8's
-            // default JIT compiles and then executes machine code from
-            // freshly-allocated pages, which needs exactly that -- this
-            // part is still true and --jitless is still the right default
-            // for a plain sideload with no debugger attached. What is NOT
-            // true (originally assumed from a LiveContainer-vs-direct-
-            // sideload correlation, since corrected -- see README.md's
-            // "JIT: currently disabled" section): that this was ever what
-            // caused the reported white-screen crash. A real sysdiagnose
-            // showed no amfid/codesign/JIT involvement at all, and the
-            // crash reproduced identically with --jitless removed
-            // entirely -- the real cause was a separate, unrelated bug
-            // (see configureHomeEnvironment()'s doc comment above).
-            "--jitless",
             "--max-old-space-size=256",
             entryScript,
         ]
+        #if !targetEnvironment(simulator)
+        // iOS denies third-party processes the ability to mark memory
+        // pages executable at runtime (no dynamic-codesigning
+        // entitlement -- Apple grants that only in narrow cases, not to
+        // a free/Personal Team signing identity) unless the process is
+        // CS_DEBUGGED (a live debugger attached), and per README.md's
+        // "JIT: currently disabled" section, iOS 26+/TXM devices need
+        // more than that (a live breakpoint-based allocation protocol, a
+        // separate, not-yet-built V8 patch) -- so on a real device,
+        // --jitless is still the safe default absent that patch. This
+        // was never what caused the earlier white-screen crash (see
+        // configureHomeEnvironment()'s doc comment) -- a real
+        // sysdiagnose showed no amfid/codesign/JIT involvement, and the
+        // crash reproduced identically with --jitless removed entirely.
+        //
+        // Simulator has none of these restrictions at all (Xcode's
+        // simulated container is a plain, permissive process on the
+        // Mac's own kernel, not a real iOS sandbox boundary -- same
+        // reason configureHomeEnvironment()'s EPERM bug never reproduced
+        // there) -- forcing --jitless there too would only make
+        // Simulator-based verification less representative of what real
+        // JIT-enabled V8 actually does, for no real benefit, so it's
+        // conditional on a real device build instead of unconditional.
+        arguments.insert("--jitless", at: 1)
+        #endif
         if entryScript == bundledEntry {
             arguments += [
                 "--auth", "none",
