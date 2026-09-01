@@ -113,6 +113,18 @@ struct iPadVSCodeApp: App {
                     menuBridge.pendingCommand = .toggleTerminal
                 }
                 .keyboardShortcut("`", modifiers: .control)
+
+                Divider()
+
+                // Opens NativeWorkbenchExperimentView — an isolated screen
+                // for testing the Electron-desktop-port hypothesis (see
+                // README.md's "Architecture pivot" section), entirely
+                // separate from the code-server flow every other item in
+                // this menu talks to. No keyboard shortcut on purpose: this
+                // is a debug/experiment entry point, not a normal command.
+                Button("Experimental: Native Workbench…") {
+                    menuBridge.nativeExperimentRequested = true
+                }
             }
 
             CommandMenu("Go") {

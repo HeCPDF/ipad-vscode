@@ -62,6 +62,15 @@ targets:
         type: folder
         optional: true
         buildPhase: resources
+      # electron-browser workbench bundle (out-vscode-min), fetched by
+      # build.yml the same way as code-server above -- backs
+      # VSCodeFileSchemeHandler's vscode-file://vscode-app/... scheme.
+      # See README.md's "Architecture pivot" section and
+      # NativeWorkbenchExperimentView.swift.
+      - path: Sources/App/Resources/vscode-desktop
+        type: folder
+        optional: true
+        buildPhase: resources
       # Tiny (~1s) silent PCM loop AVAudioPlayer plays on repeat to keep
       # the app process alive in the background — see AudioKeepAlive.swift.
       - path: Resources/silence.wav

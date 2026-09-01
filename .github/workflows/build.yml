@@ -69,6 +69,29 @@ jobs:
           find Sources/App/Resources/code-server -maxdepth 1 | head -5
           find Sources/App/Resources/code-server | wc -l
 
+      # Best-effort, not required for the app to build or ship: backs
+      # NativeWorkbenchExperimentView.swift's experimental menu item, not
+      # the app's real startup path (still code-server, above). Unlike the
+      # nodejs-mobile/code-server fetches this deliberately never fails the
+      # job -- a missing or stale vscode-desktop-build-experiment.yml
+      # artifact should just make that one menu item report "not
+      # available" (VSCodeFileSchemeHandler's failable init), not break
+      # every other build.
+      - name: Fetch vscode desktop bundle (experimental native workbench, best-effort)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          run_id=$(gh run list --repo HeCPDF/ipad-vscode --workflow "vscode desktop build experiment" --status success --branch main-yyjpt0 -L 1 --json databaseId -q '.[0].databaseId')
+          if [ -z "$run_id" ]; then
+            echo "::warning::no successful vscode-desktop-build-experiment.yml run found -- skipping (experimental feature only)"
+            exit 0
+          fi
+          echo "using vscode-desktop-build-experiment run $run_id"
+          mkdir -p Sources/App/Resources/vscode-desktop
+          gh run download "$run_id" --repo HeCPDF/ipad-vscode --name vscode-desktop-bundle --dir Sources/App/Resources/vscode-desktop
+          find Sources/App/Resources/vscode-desktop | wc -l
+
       - name: Generate Xcode project
         run: xcodegen generate
 

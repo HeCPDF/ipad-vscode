@@ -18,6 +18,11 @@ final class MenuBridge: ObservableObject {
     /// runs `NativeMenuCommand.dispatchScript` in it. See that type's doc
     /// comment for the whole mechanism.
     @Published var pendingCommand: NativeMenuCommand?
+
+    /// Presents NativeWorkbenchExperimentView — see that type's doc comment.
+    /// Entirely separate from the code-server flow above; doesn't touch
+    /// `pendingCommand`/the webview it dispatches into.
+    @Published var nativeExperimentRequested = false
 }
 
 /// A real vscode command, invoked by ID through the trusted bridge

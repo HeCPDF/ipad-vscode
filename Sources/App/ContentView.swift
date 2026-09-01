@@ -42,6 +42,9 @@ struct ContentView: View {
                 }
             }
         }
+        .fullScreenCover(isPresented: $menuBridge.nativeExperimentRequested) {
+            NativeWorkbenchExperimentView()
+        }
         .task {
             await tunnel.start()
             if tunnel.isRunning {
