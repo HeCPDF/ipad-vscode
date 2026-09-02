@@ -118,9 +118,17 @@ it finished. Next session's first move should be:
 Discussed explicitly with the user; worth restating so a future session
 doesn't burn time on them:
 
-- **No integrated terminal.** `node-pty` needs a real kernel pty
+- **No *real* pty-backed terminal.** `node-pty` needs a real kernel pty
   (`/dev/ptmx`); iOS denies that to third-party sandboxed apps, same as it
-  denies `fork()`. No known workaround short of jailbreak.
+  denies `fork()`. No known workaround short of jailbreak for that specific
+  mechanism — but see README's corrected "no integrated terminal" section:
+  [Pyto](https://github.com/ColdGrub1384/Pyto) proves a terminal-*styled*
+  UI (`hterm`) driving in-process, statically-linked command
+  implementations (`ios_system`, ~150 commands compiled into the app, no
+  `fork()`/`exec()` anywhere) is real and shipping without jailbreak. Not
+  a full shell (no arbitrary binaries, no job control), but a genuine,
+  unexplored path — not a flat ceiling. Worth investigating before ruling
+  a terminal out again.
 - **No native process spawning**, so most debug adapters (anything that
   spawns a debuggee as a child process) won't work. Only in-process/pure-JS
   debug adapters will.
