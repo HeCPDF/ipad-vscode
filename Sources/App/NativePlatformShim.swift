@@ -202,7 +202,23 @@ enum NativePlatformShim {
                         providerScopes: []
                     }
                 },
-                nls: { messages: [], language: undefined }
+                nls: { messages: [], language: undefined },
+                // Real desktop VS Code's window configuration always
+                // includes which log resources to set up
+                // (INativeWindowConfiguration.loggers, main-process-owned
+                // -- window.ts populates it from LoggerMainService).
+                // Found missing via real (now actually working, after
+                // fixing NativeConsoleForwarder's own string-escaping
+                // bug) console-forwarder evidence: "TypeError: undefined
+                // is not an object (evaluating
+                // 'this.configuration.loggers.map')" -- some real
+                // workbench init step maps over this array
+                // unconditionally. Empty is always a safe, valid value
+                // for `.map()` regardless of what loggers would really
+                // be configured; this project has no real logger
+                // resources to report since it isn't writing vscode's
+                // own on-disk log files.
+                loggers: []
             };
             // Real vscode's own workbench code reads
             // configuration.nls.messages[idx] directly for every
