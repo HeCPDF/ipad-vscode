@@ -67,7 +67,7 @@ final class NativeConsoleForwarder: NSObject, WKScriptMessageHandler {
             function errorToString(e) {
                 if (!(e instanceof Error)) { return String(e); }
                 var head = (e.name || 'Error') + ': ' + (e.message || '(no message)');
-                return e.stack ? (head + '\n' + e.stack) : head;
+                return e.stack ? (head + '\\n' + e.stack) : head;
             }
             function stringifyArgs(args) {
                 return Array.prototype.map.call(args, function (a) {
