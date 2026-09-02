@@ -102,6 +102,20 @@ jobs:
             apply "$p"
           done
 
+          # Not Coder-branding -- this one's genuinely required build-time
+          # plumbing. gulpfile.reh.ts's own vscode-reh-web-*-min-ci task
+          # unconditionally calls prepareBuiltInCopilotRipgrepShim
+          # (build/lib/copilot.ts), which expects a Copilot SDK already
+          # materialized under extensions/copilot/node_modules/@github/
+          # copilot/sdk -- confirmed as a real build failure on this
+          # project's own first CI run, not assumed ("Copilot SDK directory
+          # not found"). copilot.diff is what adds the
+          # compile-copilot-extension-full-build gulp task that prepares
+          # it (see the npm ci step below) -- code-server's own
+          # build-vscode.sh runs the same task before its reh-web build for
+          # the same reason.
+          apply copilot
+
           rejects=$(find . -name "*.rej")
           if [ -n "$rejects" ]; then
             echo "::error::unresolved patch rejects:"
@@ -152,6 +166,7 @@ jobs:
           VERSION: "1.0.0"
         run: |
           export BUILD_SOURCEVERSION=$(git rev-parse HEAD)
+          VSCODE_QUALITY=stable npm run gulp compile-copilot-extension-full-build
           npm run gulp core-ci
           npm run gulp vscode-reh-web-linux-x64-min-ci
 

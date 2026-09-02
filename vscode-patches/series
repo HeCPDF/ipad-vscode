@@ -25,3 +25,4 @@ ios-exthost-no-fork.diff
 ios-command-bridge.diff
 ios-node18-globals-polyfill.diff
 ios-remote-label.diff
+copilot.diff
