@@ -1,0 +1,68 @@
+Register a clean default label for this app's own loopback remote authority
+
+vscode-web's own workbench.ts (src/vs/code/browser/workbench/workbench.ts)
+unconditionally sets `remoteAuthority: location.host` for every web/reh-web
+connection -- there is no "local mode" in this client at all, by design:
+the connected backend is always modeled as a remote authority, even when,
+as here, it's a loopback server on the same physical iPad. That's
+load-bearing (it's how the workbench discovers its extension host and
+filesystem provider), not something a patch can remove without breaking
+the connection itself -- see NodeRuntimeController.swift and README.md's
+"minimize remote-authority traces" section for the full reasoning.
+
+What *is* just display text is `LabelService.getHostLabel()`'s output,
+read by both the Settings editor's Remote tab
+(preferencesWidgets.ts's `SettingsTargetsWidget`) and the bottom-left
+remote status bar item (remoteIndicator.ts) -- both call
+`getHostLabel(Schemas.vscodeRemote, remoteAuthority)` and fall back to the
+*raw* authority string ("127.0.0.1:8482") if no formatter is registered
+for it. Real Remote extensions (Remote-SSH, Codespaces, etc.) register
+their own formatter via the `resourceLabelFormatters` extension
+contribution point; this app has no such extension to ship, so registers
+one default formatter directly in LabelService's constructor instead,
+covering both surfaces at once with "This iPad" rather than a raw loopback
+address.
+
+Index: code-server/lib/vscode/src/vs/workbench/services/label/common/labelService.ts
+===================================================================
+--- code-server/lib/vscode/src/vs/workbench/services/label/common/labelService.ts
++++ code-server/lib/vscode/src/vs/workbench/services/label/common/labelService.ts
+@@ -164,6 +164,38 @@
+ 		this.storedFormatters = memento.getMemento(StorageScope.PROFILE, StorageTarget.MACHINE);
+ 		this.formatters = this.storedFormatters?.formatters?.slice() || [];
+
++		// vscode-web's workbench.ts unconditionally sets remoteAuthority to
++		// location.host (see src/vs/code/browser/workbench/workbench.ts) --
++		// there is no "local mode" in the web/reh-web client at all, by
++		// design: the connected backend is always modeled as a remote
++		// authority even when, as here, it's a loopback server on the same
++		// physical device. That's load-bearing (it's how the workbench
++		// finds its extension host and filesystem provider), not removable
++		// -- but getHostLabel()'s own fallback chain (a registered
++		// formatter's workspaceSuffix, else the raw authority string) means
++		// leaving no formatter registered surfaces the raw loopback
++		// authority ("127.0.0.1:8482") in both the Settings editor's Remote
++		// tab (preferencesWidgets.ts) and the bottom-left remote status bar
++		// item (remoteIndicator.ts) -- both read through this exact
++		// getHostLabel() call. Registering one default formatter here fixes
++		// both at once, the same way Remote-SSH/Codespaces register their
++		// own via the resourceLabelFormatters extension point, just built
++		// in rather than shipped as a separate extension since there's
++		// nothing here to make optional.
++		if (!this.formatters.some(f => f.scheme === Schemas.vscodeRemote)) {
++			this.formatters.push({
++				scheme: Schemas.vscodeRemote,
++				authority: '127.0.0.1:*',
++				formatting: {
++					label: '${path}',
++					separator: posix.sep,
++					tildify: true,
++					workspaceSuffix: 'This iPad',
++					workspaceTooltip: 'Running locally on this iPad — not a separate machine',
++				},
++			});
++		}
++
+ 		// Remote environment is potentially long running
+ 		this.resolveRemoteEnvironment();
+ 	}

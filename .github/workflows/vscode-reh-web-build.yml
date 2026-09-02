@@ -98,7 +98,7 @@ jobs:
           rm -f src/vs/server/node/serverEnvironmentService.ts.rej
           apply trusted-domains
 
-          for p in signature-verification csp-hashes ios-exthost-no-fork ios-command-bridge ios-node18-globals-polyfill; do
+          for p in signature-verification csp-hashes ios-exthost-no-fork ios-command-bridge ios-node18-globals-polyfill ios-remote-label; do
             apply "$p"
           done
 
