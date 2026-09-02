@@ -114,20 +114,27 @@ jobs:
       # directory (confirmed for real: downloading the artifact from this
       # workflow's first successful run showed `code/electron-browser/...`
       # and `workbench/...` at the artifact root, not `vs/code/...` and
-      # `vs/workbench/...`). VSCodeFileSchemeHandler.swift serves this
-      # bundle at `vscode-file://vscode-app/vs/...` -- matching real
-      # vscode's own `out/vs/...` layout, which the bundle's own internal
-      # relative asset references assume -- so a flattened artifact meant
-      # the workbench.html request 404'd before any JS ever ran, discovered
-      # via NativeConsoleForwarder capturing zero output at all in a real
-      # Simulator run. Staging into a `dist-bundle/vs/...` directory first
-      # and uploading that single root keeps `vs/` intact.
-      - name: Stage bundle under vs/ so the uploaded artifact keeps out-vscode-min's real layout
+      # `vs/workbench/...`). Fixing just that revealed a second, deeper
+      # layout mismatch, again confirmed via real Simulator evidence: real
+      # vscode's own workbench.ts computes its dynamic-import base URL as
+      # `<appRoot>/out/` (`out-vscode-min` IS what a real install's `out/`
+      # directory contains, verbatim -- `out-vscode-min/vs/...` on disk is
+      # `out/vs/...` at runtime), so the actual workbench bundle load
+      # (`import('vs/workbench/workbench.desktop.main.js', baseUrl)`)
+      # needs `vs/` to sit under an `out/` segment, not at the served
+      # root -- observed as "TypeError: Importing a module script failed"
+      # once the earlier vs/-prefix fix let the page load far enough to
+      # reach this dynamic import. Staging into `dist-bundle/out/vs/...`
+      # (not just `dist-bundle/vs/...`) and uploading that single root
+      # matches this exactly; NativeWorkbenchExperimentView.swift's initial
+      # URL and NativePlatformShim.swift's fabricated `appRoot` were
+      # updated to match (see their own comments).
+      - name: Stage bundle under out/vs/ so it matches vscode's own runtime layout
         working-directory: vscode-src
         run: |
-          mkdir -p dist-bundle/vs/code/electron-browser/workbench dist-bundle/vs/workbench
-          cp -R out-vscode-min/vs/code/electron-browser/workbench/. dist-bundle/vs/code/electron-browser/workbench/
-          cp out-vscode-min/vs/workbench/workbench.desktop.main.* dist-bundle/vs/workbench/
+          mkdir -p dist-bundle/out/vs/code/electron-browser/workbench dist-bundle/out/vs/workbench
+          cp -R out-vscode-min/vs/code/electron-browser/workbench/. dist-bundle/out/vs/code/electron-browser/workbench/
+          cp out-vscode-min/vs/workbench/workbench.desktop.main.* dist-bundle/out/vs/workbench/
           find dist-bundle -type f
 
       - name: Upload the bundle for inspection

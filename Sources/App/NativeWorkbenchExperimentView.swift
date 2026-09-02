@@ -90,10 +90,16 @@ struct NativeWorkbenchExperimentView: View {
         ipcRelay.connect(bridge: bridge)
         webView = newWebView
 
+        // "/out/vs/..." -- not "/vs/...": real vscode's own
+        // workbench.ts computes its dynamic-import base URL as
+        // `<appRoot>/out/`, so everything (including this initial
+        // document) needs to live under an `out/` segment to match --
+        // see vscode-desktop-build-experiment.yml's staging-step comment
+        // for the full evidence chain that found this.
         var components = URLComponents()
         components.scheme = VSCodeFileSchemeHandler.scheme
         components.host = VSCodeFileSchemeHandler.authority
-        components.path = "/vs/code/electron-browser/workbench/workbench.html"
+        components.path = "/out/vs/code/electron-browser/workbench/workbench.html"
         if let url = components.url {
             newWebView.load(URLRequest(url: url))
         }

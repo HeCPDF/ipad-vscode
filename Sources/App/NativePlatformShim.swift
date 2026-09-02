@@ -154,7 +154,16 @@ enum NativePlatformShim {
             // out from real Simulator evidence, not guessed ahead of it.
             var ipadVSCodeSandboxConfiguration = {
                 windowId: 1,
-                appRoot: '/',
+                // Empty, not '/': workbench.ts's fileUriFromPath(appRoot,
+                // ...) + '/out/' needs to produce a clean
+                // vscode-file://vscode-app/out/ with no doubled slash --
+                // fileUriFromPath only prepends a leading '/' when the
+                // input path is non-empty (confirmed from real source),
+                // so '/' as input yields an extra, wrong slash here.
+                // Found via real Simulator evidence -- see
+                // vscode-desktop-build-experiment.yml's staging-step
+                // comment for the full chain.
+                appRoot: '',
                 userEnv: {},
                 product: {
                     nameShort: 'iPad VSCode',
