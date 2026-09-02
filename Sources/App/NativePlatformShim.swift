@@ -218,7 +218,64 @@ enum NativePlatformShim {
                 // be configured; this project has no real logger
                 // resources to report since it isn't writing vscode's
                 // own on-disk log files.
-                loggers: []
+                loggers: [],
+                // The rest of INativeWindowConfiguration's required
+                // (non-optional) fields, confirmed against real source
+                // (src/vs/platform/window/common/window.ts) rather than
+                // guessed one crash at a time -- found necessary via a
+                // real "Error: The \"path\" argument must be of type
+                // string. Received type undefined" (Node-style
+                // path-validation, vscode's browser-safe path.ts)
+                // traced to NativeWorkbenchEnvironmentService's
+                // constructor (electron-browser/environmentService.ts)
+                // reading configuration.homeDir/tmpDir/userDataDir
+                // directly into `paths`, then `userDataPath` (=
+                // paths.userDataDir) being undefined broke
+                // `join(this.userDataPath, 'logs', key)` in
+                // environmentService.ts's `logsHome` getter.
+                homeDir: '/var/mobile/Containers/Data/ipad-vscode/home',
+                tmpDir: '/var/mobile/Containers/Data/ipad-vscode/tmp',
+                userDataDir: '/var/mobile/Containers/Data/ipad-vscode/userdata',
+                machineId: 'ipad-vscode-machine',
+                sqmId: '',
+                devDeviceId: 'ipad-vscode-device',
+                isPortable: false,
+                execPath: '/var/mobile/Containers/Data/ipad-vscode/exec',
+                colorScheme: { dark: true, highContrast: false },
+                perfMarks: [],
+                os: { release: '26.0', hostname: 'ipad-vscode', arch: 'arm64' },
+                // LogLevel.Info = 3 (src/vs/platform/log/common/log.ts's
+                // enum: Off, Trace, Debug, Info, Warning, Error).
+                logLevel: 3,
+                // profiles: also required (INativeWindowConfiguration.profiles),
+                // and IUserDataProfile (userDataProfile.ts) needs every
+                // one of these URI fields populated -- desktop.main.ts's
+                // initServices() does URI.revive()/reviveProfile() on
+                // these unconditionally right after the loggers/env
+                // setup this fix already covers, so filled in together
+                // rather than waiting for that to crash separately.
+                profiles: (function () {
+                    function fileUri(p) { return { scheme: 'file', path: p, authority: '' }; }
+                    var root = '/var/mobile/Containers/Data/ipad-vscode/userdata';
+                    var defaultProfile = {
+                        id: '__default__profile__',
+                        isDefault: true,
+                        name: 'Default',
+                        location: fileUri(root),
+                        globalStorageHome: fileUri(root + '/globalStorage'),
+                        settingsResource: fileUri(root + '/User/settings.json'),
+                        keybindingsResource: fileUri(root + '/User/keybindings.json'),
+                        tasksResource: fileUri(root + '/User/tasks.json'),
+                        snippetsHome: fileUri(root + '/User/snippets'),
+                        promptsHome: fileUri(root + '/User/prompts'),
+                        extensionsResource: fileUri(root + '/extensions.json'),
+                        mcpResource: fileUri(root + '/User/mcp.json'),
+                        languageModelsResource: fileUri(root + '/User/languageModels.json'),
+                        agentPluginsHome: fileUri(root + '/User/agentPlugins'),
+                        cacheHome: fileUri(root + '/CachedData')
+                    };
+                    return { home: fileUri(root), all: [defaultProfile], profile: defaultProfile };
+                })()
             };
             // Real vscode's own workbench code reads
             // configuration.nls.messages[idx] directly for every
