@@ -91,6 +91,21 @@ final class NativeConsoleForwarder: NSObject, WKScriptMessageHandler {
                 var reason = event.reason instanceof Error ? errorToString(event.reason) : event.reason;
                 forward('error', 'unhandled promise rejection: ' + reason);
             });
+            // CSP violations (workbench.html ships a real, fairly strict
+            // Content-Security-Policy meta tag -- style-src/script-src
+            // 'self', among others) are otherwise completely silent: no
+            // console output, no thrown error, nothing the two handlers
+            // above would ever see. Real evidence so far (a captured
+            // screenshot showing the native workbench's own nav chrome
+            // -- "Close" / "Native Workbench (Experimental)" -- but a
+            // fully blank white body below it, despite zero JS errors of
+            // any kind) is consistent with workbench.desktop.main.css
+            // being CSP-blocked rather than genuinely absent, but that's
+            // a hypothesis, not yet confirmed -- this listener is how to
+            // find out for real instead of guessing.
+            document.addEventListener('securitypolicyviolation', function (e) {
+                forward('error', 'CSP violation: blocked "' + e.blockedURI + '" (directive: ' + e.violatedDirective + ')');
+            });
         })();
         """,
         injectionTime: .atDocumentStart,
