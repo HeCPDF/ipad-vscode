@@ -54,9 +54,24 @@ final class NativeConsoleForwarder: NSObject, WKScriptMessageHandler {
                 if (!handler) { return; }
                 try { handler.postMessage({ level: level, text: String(text) }); } catch (e) {}
             }
+            // WebKit/JavaScriptCore's Error.stack format is just call
+            // frames (`func@url:line:col`, one per line) -- unlike V8,
+            // it does NOT prefix the message/name as its own first line.
+            // Preferring `.stack` alone (as this used to) silently
+            // dropped the actual error text, confirmed for real: a
+            // captured "unhandled promise rejection: initServices@...js:
+            // 5342:131798" log line carried no message at all, just the
+            // throwing frame. Always include `.message`/`.name`
+            // explicitly now, stack trace appended for extra context
+            // rather than in place of it.
+            function errorToString(e) {
+                if (!(e instanceof Error)) { return String(e); }
+                var head = (e.name || 'Error') + ': ' + (e.message || '(no message)');
+                return e.stack ? (head + '\n' + e.stack) : head;
+            }
             function stringifyArgs(args) {
                 return Array.prototype.map.call(args, function (a) {
-                    if (a instanceof Error) { return a.stack || (a.name + ': ' + a.message); }
+                    if (a instanceof Error) { return errorToString(a); }
                     if (typeof a === 'object') { try { return JSON.stringify(a); } catch (e) { return String(a); } }
                     return String(a);
                 }).join(' ');
@@ -69,11 +84,11 @@ final class NativeConsoleForwarder: NSObject, WKScriptMessageHandler {
                 };
             });
             window.addEventListener('error', function (event) {
-                var detail = event.error ? (event.error.stack || event.error.message) : event.message;
+                var detail = event.error ? errorToString(event.error) : event.message;
                 forward('error', 'uncaught exception: ' + detail + ' (' + event.filename + ':' + event.lineno + ':' + event.colno + ')');
             });
             window.addEventListener('unhandledrejection', function (event) {
-                var reason = event.reason instanceof Error ? (event.reason.stack || event.reason.message) : event.reason;
+                var reason = event.reason instanceof Error ? errorToString(event.reason) : event.reason;
                 forward('error', 'unhandled promise rejection: ' + reason);
             });
         })();
