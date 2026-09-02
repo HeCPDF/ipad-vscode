@@ -165,12 +165,42 @@ enum NativePlatformShim {
                 // comment for the full chain.
                 appRoot: '',
                 userEnv: {},
+                // Modeled on vscode's own canonical "running out of
+                // sources" default (src/vs/platform/product/common/
+                // product.ts's "Web environment or unknown" branch) --
+                // not a guess: this project's fabricated `product` never
+                // goes through that fallback (product.ts's *first*
+                // branch, `vscodeGlobal.context.configuration()`, wins
+                // and returns exactly this object untouched), so any
+                // field real code unconditionally relies on has to be
+                // supplied here directly. `defaultChatAgent` in
+                // particular was found missing via real Simulator
+                // evidence ("Onboarding requires a default chat agent
+                // product configuration", an `EZe(product.defaultChatAgent,
+                // ...)` assert -- see workbench.desktop.main.js) once NLS
+                // was fixed and a real chat-contribution registration
+                // ran; its value here is copied verbatim from product.ts's
+                // own default rather than invented.
                 product: {
                     nameShort: 'iPad VSCode',
                     nameLong: 'iPad VSCode',
                     applicationName: 'ipad-vscode',
                     dataFolderName: '.ipadvscode',
-                    version: '1.0.0'
+                    version: '1.0.0',
+                    urlProtocol: 'ipad-vscode',
+                    reportIssueUrl: 'https://github.com/microsoft/vscode/issues/new',
+                    licenseName: 'MIT',
+                    licenseUrl: 'https://github.com/microsoft/vscode/blob/main/LICENSE.txt',
+                    serverLicenseUrl: 'https://github.com/microsoft/vscode/blob/main/LICENSE.txt',
+                    defaultChatAgent: {
+                        extensionId: 'GitHub.copilot',
+                        chatExtensionId: 'GitHub.copilot-chat',
+                        provider: {
+                            default: { id: 'github', name: 'GitHub' },
+                            enterprise: { id: 'github-enterprise', name: 'GitHub Enterprise' }
+                        },
+                        providerScopes: []
+                    }
                 },
                 nls: { messages: [], language: undefined }
             };
