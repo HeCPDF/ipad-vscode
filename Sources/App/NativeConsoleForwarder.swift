@@ -106,6 +106,28 @@ final class NativeConsoleForwarder: NSObject, WKScriptMessageHandler {
             document.addEventListener('securitypolicyviolation', function (e) {
                 forward('error', 'CSP violation: blocked "' + e.blockedURI + '" (directive: ' + e.violatedDirective + ')');
             });
+            // A second real Simulator run (after the CSP-violation
+            // listener above found nothing) still showed the same blank
+            // white body with zero errors of any kind -- ruling out
+            // both a thrown exception and a CSP block. The remaining
+            // possibility this project's evidence-gathering couldn't
+            // previously distinguish: a genuinely hung `await` (a
+            // promise that never settles either way, e.g. on
+            // ipcRenderer.invoke() -- always-reject per NativePlatformShim,
+            // but only if something is actually awaiting its result
+            // rather than fire-and-forgetting it) versus code that ran
+            // to completion without ever mounting anything into
+            // document.body. `forward('error', ...)` here (not `.info`,
+            // to guarantee `log show`'s default Error/persisted-level
+            // visibility, unlike the console.log passthrough above)
+            // every 5s reports document.readyState and body.children.length
+            // -- if this heartbeat itself stops appearing, that's a real
+            // hang (script literally can't get back to the event loop);
+            // if it keeps appearing with children=0, the bootstrap
+            // finished without ever mounting the workbench UI.
+            setInterval(function () {
+                forward('error', '[heartbeat] readyState=' + document.readyState + ' body.children=' + (document.body ? document.body.children.length : 'null') + ' elapsed=' + Math.round(performance.now()) + 'ms');
+            }, 5000);
         })();
         """,
         injectionTime: .atDocumentStart,
