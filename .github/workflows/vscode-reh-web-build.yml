@@ -111,19 +111,25 @@ jobs:
           fi
           echo "all patches applied cleanly"
 
-      - name: Set our own product.json branding (no Coder identity, no code-server CLI wrapper)
+      - name: Set only the non-branding product.json fields this build needs (keep vscode's own name/identity as-is)
         working-directory: vscode-src
         run: |
           set -e
+          # Deliberately not touching nameShort/nameLong/applicationName/
+          # dataFolderName/win32MutexName -- those stay whatever plain
+          # microsoft/vscode source ships by default ("Code - OSS", per
+          # product.json's own stock values), matching the user's explicit
+          # ask: no "iPad VSCode" override, no re-branding, as close to
+          # genuine upstream vscode identity as an unofficial OSS build can
+          # get. Only functional fields (not user-visible product name)
+          # get set here: the license/issue URLs point at code-server's
+          # own fork by default (irrelevant now that we don't build it),
+          # and open-vsx/GitHub trust config is needed for the marketplace
+          # and auth patches already applied above to actually work.
           cp product.json product.original.json
           jq --slurp '.[0] * .[1]' product.original.json <(cat << 'EOF'
           {
             "quality": "stable",
-            "nameShort": "iPad VSCode",
-            "nameLong": "iPad VSCode",
-            "applicationName": "ipad-vscode",
-            "dataFolderName": ".ipad-vscode",
-            "win32MutexName": "ipadvscode",
             "licenseUrl": "https://github.com/microsoft/vscode/blob/main/LICENSE.txt",
             "reportIssueUrl": "https://github.com/microsoft/vscode/issues/new",
             "linkProtectionTrustedDomains": ["https://open-vsx.org"],
