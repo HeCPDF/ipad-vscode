@@ -113,22 +113,29 @@ node -e "
 
 # Same missing-global-crypto gap as trim-code-server.sh (Node <19 has no
 # bare `crypto` global; only require('crypto').webcrypto). There, the shim
-# was prepended to code-server's own CLI wrapper (out/node/entry.js) since
-# that's the real process entry point NodeRuntimeController.swift loads.
-# This build has no such wrapper -- NodeRuntimeController will load
-# vscode's own native server entry point directly -- so shim whichever file
-# that turns out to be, found by name rather than a hardcoded path since
-# the exact output layout is being confirmed for the first time by this
-# same CI run.
+# was prepended to code-server's own CLI wrapper (out/node/entry.js), a
+# CommonJS file, so a bare require() call worked. This build has no such
+# wrapper -- NodeRuntimeController loads vscode's own native server entry
+# point directly, found by name rather than a hardcoded path since the
+# exact output layout is being confirmed for the first time by this same
+# CI run -- and that entry point's own package.json declares
+# "type": "module" (vscode's reh-web build is ESM), so a CommonJS
+# require() call throws "ReferenceError: require is not defined in ES
+# module scope" as the very first line ever executed, before the server
+# gets anywhere near binding to a port. Confirmed via a real captured
+# node-stdio.log (not guessed), the first-ever Simulator run of this
+# integration. Fixed with a dynamic import() instead -- valid at the top
+# of an ES module via top-level await, unlike require(), and functionally
+# equivalent to trim-code-server.sh's require('crypto').webcrypto.
 ENTRY_JS="$(find . -maxdepth 3 -name 'server-main.js' | sort | head -1)"
 if [ -n "$ENTRY_JS" ] && [ -f "$ENTRY_JS" ]; then
   if head -n1 "$ENTRY_JS" | grep -q "^#!"; then
-    { head -n1 "$ENTRY_JS"; echo 'if(typeof globalThis.crypto==="undefined"){globalThis.crypto=require("crypto").webcrypto;}'; tail -n +2 "$ENTRY_JS"; } > "$ENTRY_JS.tmp"
+    { head -n1 "$ENTRY_JS"; echo 'if(typeof globalThis.crypto==="undefined"){globalThis.crypto=(await import("node:crypto")).webcrypto;}'; tail -n +2 "$ENTRY_JS"; } > "$ENTRY_JS.tmp"
   else
-    { echo 'if(typeof globalThis.crypto==="undefined"){globalThis.crypto=require("crypto").webcrypto;}'; cat "$ENTRY_JS"; } > "$ENTRY_JS.tmp"
+    { echo 'if(typeof globalThis.crypto==="undefined"){globalThis.crypto=(await import("node:crypto")).webcrypto;}'; cat "$ENTRY_JS"; } > "$ENTRY_JS.tmp"
   fi
   mv "$ENTRY_JS.tmp" "$ENTRY_JS"
-  echo "inserted globalThis.crypto shim into $ENTRY_JS"
+  echo "inserted ESM-compatible globalThis.crypto shim into $ENTRY_JS"
 else
   echo "::error::no server-main.js found under $RELEASE_DIR -- entry point name assumption is wrong, update this script"
   exit 1
