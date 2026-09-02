@@ -174,9 +174,34 @@ enum NativePlatformShim {
                 },
                 nls: { messages: [], language: undefined }
             };
+            // Real vscode's own workbench code reads
+            // configuration.nls.messages[idx] directly for every
+            // localized string (`!!! NLS MISSING: N !!!` is real
+            // vscode's own error format when the index isn't found --
+            // observed for real once the out/vs/ layout fix let the
+            // actual workbench bundle start executing). The real
+            // messages array is a build artifact
+            // (build/next/nls-plugin.ts's finalizeNLS(), written to
+            // out/nls.messages.json -- staged and served by this
+            // project the same way the rest of the bundle is), fetched
+            // here rather than hardcoded since it's thousands of
+            // real, versioned strings, not something to fabricate.
+            var ipadVSCodeConfigResolved = false;
+            var ipadVSCodeConfigPromise = fetch('vscode-file://vscode-app/out/nls.messages.json')
+                .then(function (r) { return r.json(); })
+                .catch(function () { return []; })
+                .then(function (messages) {
+                    ipadVSCodeSandboxConfiguration.nls.messages = messages;
+                    ipadVSCodeConfigResolved = true;
+                    return ipadVSCodeSandboxConfiguration;
+                });
             window.vscode.context = {
-                configuration: function () { return ipadVSCodeSandboxConfiguration; },
-                resolveConfiguration: function () { return Promise.resolve(ipadVSCodeSandboxConfiguration); }
+                // Real preload.ts's configuration() is undefined until
+                // resolveConfiguration() has completed once -- matched
+                // here rather than always returning the (possibly still
+                // messages-less) object.
+                configuration: function () { return ipadVSCodeConfigResolved ? ipadVSCodeSandboxConfiguration : undefined; },
+                resolveConfiguration: function () { return ipadVSCodeConfigPromise; }
             };
 
             window.vscode.ipcRenderer = {

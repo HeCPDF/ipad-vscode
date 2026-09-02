@@ -99,6 +99,7 @@ jobs:
             out-vscode-min/vs/code/electron-browser/workbench/workbench.js \
             out-vscode-min/vs/workbench/workbench.desktop.main.js \
             out-vscode-min/vs/workbench/workbench.desktop.main.css \
+            out-vscode-min/nls.messages.json \
           ; do
             if [ ! -s "$f" ]; then
               echo "::error::expected bundle output missing or empty: $f"
@@ -129,12 +130,23 @@ jobs:
       # matches this exactly; NativeWorkbenchExperimentView.swift's initial
       # URL and NativePlatformShim.swift's fabricated `appRoot` were
       # updated to match (see their own comments).
+      #
+      # nls.messages.json (build/next/nls-plugin.ts's finalizeNLS(), written
+      # to the outDir root -- i.e. out-vscode-min/nls.messages.json, so
+      # out/nls.messages.json at runtime) is a flat JSON array of every
+      # localized string, indexed exactly the way workbench code's
+      # `configuration.nls.messages[idx]` reads it -- found missing via
+      # real Simulator evidence ("!!! NLS MISSING: 2764 !!!") once the
+      # out/vs/ layout fix let the real workbench bundle actually start
+      # executing. NativePlatformShim.swift's fabricated `context` now
+      # fetches this file at runtime instead of hardcoding an empty array.
       - name: Stage bundle under out/vs/ so it matches vscode's own runtime layout
         working-directory: vscode-src
         run: |
           mkdir -p dist-bundle/out/vs/code/electron-browser/workbench dist-bundle/out/vs/workbench
           cp -R out-vscode-min/vs/code/electron-browser/workbench/. dist-bundle/out/vs/code/electron-browser/workbench/
           cp out-vscode-min/vs/workbench/workbench.desktop.main.* dist-bundle/out/vs/workbench/
+          cp out-vscode-min/nls.messages.json dist-bundle/out/nls.messages.json
           find dist-bundle -type f
 
       - name: Upload the bundle for inspection
