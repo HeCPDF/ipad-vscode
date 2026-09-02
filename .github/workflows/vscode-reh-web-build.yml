@@ -1,0 +1,174 @@
+name: vscode reh-web build (official source, no code-server fork)
+
+# Replaces the HeCPDF/code-server fork as this app's server payload.
+# code-server's own lib/vscode is already an unmodified microsoft/vscode
+# checkout plus a quilt patch series (confirmed by reading its
+# ci/build/update-vscode.sh and ci/build/build-vscode.sh: lib/vscode is a
+# plain git submodule of https://github.com/microsoft/vscode, and the final
+# server payload is vscode's own `npm run gulp vscode-reh-web-*-min-ci`
+# task, unmodified). Only a handful of that fork's ~29 patches are actually
+# Coder-brand-specific (getting-started.diff's "Deploy code-server for your
+# team" promo box, app-name.diff, logout.diff, copilot.diff) -- the rest
+# (base path, open-vsx marketplace, local storage, signature verification,
+# CSP, telemetry endpoint, the iOS worker_threads/globals/command-bridge
+# patches, etc.) are necessary glue for self-hosting vscode-web outside
+# Microsoft's own vscode.dev/Codespaces infrastructure, unrelated to any
+# vendor identity.
+#
+# This workflow clones microsoft/vscode directly (same pinned commit
+# vscode-desktop-build-experiment.yml already uses), applies only the
+# curated, non-Coder-branded subset of that patch series (vscode-patches/,
+# copied verbatim from HeCPDF/code-server's patches/ -- see each file's own
+# header comment for what it does and why it's kept), sets our own
+# product.json branding directly (no --app-name CLI-flag layer needed since
+# we own product.json here), and builds vscode's own vscode-reh-web-linux-x64
+# gulp target -- the exact same official target code-server's fork builds,
+# just without code-server's own CLI wrapper (out/node/entry.js, its
+# --auth/login-page logic, etc.) in front of it. NodeRuntimeController.swift
+# will invoke vscode's native server-main.js directly instead.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main-yyjpt0]
+    paths:
+      - '.github/workflows/vscode-reh-web-build.yml'
+      - 'vscode-patches/**'
+      - 'scripts/vscode-patch-fixups.mjs'
+      - 'scripts/trim-vscode-reh-web.sh'
+
+env:
+  VSCODE_PIN: 08d4889f9ec4a1685d257b9b95de036c8e1ce1e5
+
+jobs:
+  build:
+    name: Build vscode-reh-web-linux-x64 from official source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone vscode at the pinned commit
+        run: |
+          git clone https://github.com/microsoft/vscode.git vscode-src
+          cd vscode-src
+          git fetch --depth 1 origin "$VSCODE_PIN"
+          git checkout "$VSCODE_PIN"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: vscode-src/.nvmrc
+
+      # Same real, source-confirmed list vscode-desktop-build-experiment.yml
+      # already uses (vscode's own .devcontainer/install-vscode.sh).
+      - name: Install vscode's own Linux native-module build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev libxkbfile-dev libkrb5-dev
+
+      - name: Apply curated patch series (with fixups for context shifted by dropped Coder-brand patches)
+        working-directory: vscode-src
+        run: |
+          set -e
+          # code-server's own patches are written as `Index: code-server/lib/vscode/...`
+          # -- 3 path components (code-server, lib, vscode) above src/ -- so
+          # -p3 strips those and lands relative to this vscode checkout root.
+          apply() { patch -p3 -f < "../vscode-patches/$1.diff"; }
+
+          for p in integration base-path proposed-api marketplace webview disable-builtin-ext-update insecure-notification update-check store-socket; do
+            apply "$p"
+          done
+
+          apply proxy-uri || true
+          node ../scripts/vscode-patch-fixups.mjs proxy-uri .
+          rm -f src/vs/server/node/webClientServer.ts.rej src/vs/base/common/product.ts.rej
+
+          for p in unique-db local-storage service-worker sourcemaps; do
+            apply "$p"
+          done
+
+          apply external-file-actions || true
+          node ../scripts/vscode-patch-fixups.mjs external-file-actions .
+          rm -f src/vs/server/node/serverEnvironmentService.ts.rej
+          apply telemetry
+
+          for p in cli-window-open keepalive clipboard; do
+            apply "$p"
+          done
+
+          apply display-language || true
+          node ../scripts/vscode-patch-fixups.mjs display-language .
+          rm -f src/vs/server/node/serverEnvironmentService.ts.rej
+          apply trusted-domains
+
+          for p in signature-verification csp-hashes ios-exthost-no-fork ios-command-bridge ios-node18-globals-polyfill; do
+            apply "$p"
+          done
+
+          rejects=$(find . -name "*.rej")
+          if [ -n "$rejects" ]; then
+            echo "::error::unresolved patch rejects:"
+            echo "$rejects"
+            for f in $rejects; do echo "=== $f ==="; cat "$f"; done
+            exit 1
+          fi
+          echo "all patches applied cleanly"
+
+      - name: Set our own product.json branding (no Coder identity, no code-server CLI wrapper)
+        working-directory: vscode-src
+        run: |
+          set -e
+          cp product.json product.original.json
+          jq --slurp '.[0] * .[1]' product.original.json <(cat << 'EOF'
+          {
+            "quality": "stable",
+            "nameShort": "iPad VSCode",
+            "nameLong": "iPad VSCode",
+            "applicationName": "ipad-vscode",
+            "dataFolderName": ".ipad-vscode",
+            "win32MutexName": "ipadvscode",
+            "licenseUrl": "https://github.com/microsoft/vscode/blob/main/LICENSE.txt",
+            "reportIssueUrl": "https://github.com/microsoft/vscode/issues/new",
+            "linkProtectionTrustedDomains": ["https://open-vsx.org"],
+            "trustedExtensionAuthAccess": ["vscode.git", "vscode.github"]
+          }
+          EOF
+          ) > product.json
+          rm product.original.json
+          jq '{nameShort, nameLong, applicationName, quality}' product.json
+
+      - name: npm ci
+        working-directory: vscode-src
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: npm ci
+
+      - name: Build vscode-reh-web-linux-x64 (official gulp target)
+        working-directory: vscode-src
+        env:
+          VERSION: "1.0.0"
+        run: |
+          export BUILD_SOURCEVERSION=$(git rev-parse HEAD)
+          npm run gulp core-ci
+          npm run gulp vscode-reh-web-linux-x64-min-ci
+
+      - name: Verify the reh-web server output exists
+        run: |
+          set -e
+          OUT="vscode-reh-web-linux-x64"
+          if [ ! -d "$OUT" ]; then
+            echo "::error::expected output dir $OUT not found next to vscode-src (gulpfile.reh.ts's BUILD_ROOT is dirname(REPO_ROOT))"
+            ls -la
+            exit 1
+          fi
+          find "$OUT" -maxdepth 2 -iname "server-main.js" -o -iname "product.json" | sort
+          jq -e '.commit' "$OUT/product.json"
+          jq '{nameShort, nameLong, quality}' "$OUT/product.json"
+          du -sh "$OUT"
+
+      - name: Trim for nodejs-mobile / iOS (node-pty removal, regex + globals polyfills, crypto shim)
+        run: bash scripts/trim-vscode-reh-web.sh vscode-reh-web-linux-x64
+
+      - name: Upload the built server payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-reh-web-linux-x64
+          path: vscode-reh-web-linux-x64
+          retention-days: 7

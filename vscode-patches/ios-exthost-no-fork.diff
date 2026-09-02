@@ -1,0 +1,266 @@
+Route the real Node extension host around cp.fork() on iOS -- in-process,
+via worker_threads, not a second OS-launched process.
+
+iOS denies fork()/posix_spawn() to third-party processes outright, at the
+sandbox-profile level -- unrelated to JIT or code signing, and with no known
+workaround short of a full jailbreak. cp.fork() is exactly how this file
+normally starts the extension host, so it can't run as-is.
+
+Earlier revision of this patch: wrote the launch parameters
+(bootstrapForkPath/args/env) to a JSON file in a shared App Group container,
+picked up by a second NEPacketTunnelProvider extension (ExtensionHostRuntime)
+that iOS itself launched as an independent OS process. That relied on
+`com.apple.developer.networking.networkextension`, which Apple restricts to
+paid Apple Developer Program accounts -- a free/Personal Team signing
+identity gets denied at runtime (NEVPNErrorDomain Code=5,
+"permission denied") no matter what the entitlements file says. See
+ipad-vscode/README.md for the free-account architecture change this is
+part of.
+
+This revision instead runs bootstrap-fork.js in-process, in a
+`worker_threads.Worker` on the SAME OS process as code-server's own server
+(itself now kept alive in the background via a silent-audio AVAudioSession
+loop in the main app -- see ipad-vscode/README.md -- rather than a
+NetworkExtension process). The exthost protocol never needed a literal
+parent/child relationship in the first place: on POSIX, when
+_canSendSocket is false (forced here via IPADVSCODE_NO_FORK), the only
+thing that happens is a plain net.Server listens on a Unix-domain-socket
+path (createRandomIPCHandle()), and whatever process -- or, as it turns
+out, whatever Worker thread within the same process -- connects to it is
+treated as the extension host. bootstrap-fork.js and the real exthost
+bootstrap chain it loads read their configuration (the named-pipe path
+included) entirely from `env`/`argv`, not from anything that presumes a
+real child_process IPC channel (`process.send` is used only for an
+optional logging pipe-through, safely absent/no-op in a Worker), so no
+patch to bootstrap-fork.js itself is needed -- only how
+extensionHostConnection.ts launches it.
+
+Correctness caveat, stated plainly because it hasn't been verified on a
+real device: nodejs-mobile's embedded libnode build is not confirmed to
+support worker_threads. It's core Node/V8 machinery (multiple Isolates
+within one Platform), not an optional native addon, so there's good reason
+to expect it works, but this has not been confirmed against an actual
+build with no Mac/iPad available in this pipeline. If extension host
+Workers fail to start, this is the first thing to check.
+
+Known gap, unchanged from the previous revision: since there's no real
+ChildProcess handle on this path, shortenReconnectionGraceTimeIfNecessary()
+and the fd-passing branch of acceptReconnection() are inert, and the
+exit/error lifecycle hooks fire from Worker events instead of ChildProcess
+events. Not addressed here.
+
+Only takes effect when IPADVSCODE_NO_FORK is set; behavior on every other
+platform is unchanged.
+
+Update (2026-09-01): the same ERR_WORKER_INVALID_EXEC_ARGV failure hit
+again, for a different pair of flags, once real V8 JIT started running
+on Simulator (see ipad-vscode's NodeRuntimeController.swift and
+README.md's JIT section) -- "Initiated Worker with invalid execArgv
+flags: --no-jitless, --no-expose-wasm", same "Failed to start
+extension host process" symptom, confirmed via a real captured
+node-stdio.log, not assumed. Extended the execArgv filter to also
+strip --jitless/--no-jitless/--expose-wasm/--no-expose-wasm. Unlike
+--max-old-space-size, these have no Worker-native resourceLimits
+equivalent to translate to, and don't need one: jitless/expose_wasm
+are process-wide V8 flags, already applied once via
+V8::SetFlagsFromCommandLine() when this main process started, and
+every Isolate the process creates afterwards -- including a Worker's
+-- inherits that same global flag state automatically. Dropped, not
+translated.
+
+Index: code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/server/node/extensionHostConnection.ts	2026-09-01 18:56:43.321179938 +0000
++++ code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts	2026-09-01 18:56:43.323407234 +0000
+@@ -5,6 +5,7 @@
+ 
+ import * as cp from 'child_process';
+ import * as net from 'net';
++import { Worker } from 'worker_threads';
+ import { VSBuffer } from '../../base/common/buffer.js';
+ import { Emitter, Event } from '../../base/common/event.js';
+ import { Disposable, DisposableStore, toDisposable } from '../../base/common/lifecycle.js';
+@@ -114,6 +115,11 @@
+ 	private _disposed: boolean;
+ 	private _remoteAddress: string;
+ 	private _extensionHostProcess: cp.ChildProcess | null;
++	// Set instead of _extensionHostProcess when IPADVSCODE_NO_FORK is set --
++	// see the launch branch in start() below. iOS denies real child
++	// processes to third-party apps, so the extension host runs in-process
++	// via worker_threads instead of being cp.fork()'d.
++	private _extensionHostWorker: Worker | null;
+ 	private _connectionData: ConnectionData | null;
+ 
+ 	constructor(
+@@ -127,10 +133,15 @@
+ 		@IConfigurationService private readonly _configurationService: IConfigurationService
+ 	) {
+ 		super();
+-		this._canSendSocket = (!isWindows || !this._environmentService.args['socket-path']);
++		// iOS: never use the fd-passing path -- it requires a real child_process
++		// IPC channel from a literal fork(), which iOS denies to third-party
++		// processes. Force the named-pipe path instead; see IPADVSCODE_NO_FORK
++		// in start() below.
++		this._canSendSocket = (!isWindows || !this._environmentService.args['socket-path']) && !process.env['IPADVSCODE_NO_FORK'];
+ 		this._disposed = false;
+ 		this._remoteAddress = remoteAddress;
+ 		this._extensionHostProcess = null;
++		this._extensionHostWorker = null;
+ 		this._connectionData = new ConnectionData(socket, initialDataChunk);
+ 		if (!this._canSendSocket && socket instanceof WebSocketNodeSocket) {
+ 			socket.setRecordInflateBytes(false);
+@@ -241,6 +252,10 @@
+ 			this._extensionHostProcess.kill();
+ 			this._extensionHostProcess = null;
+ 		}
++		if (this._extensionHostWorker) {
++			this._extensionHostWorker.terminate();
++			this._extensionHostWorker = null;
++		}
+ 		this._onClose.fire(undefined);
+ 	}
+ 
+@@ -287,30 +302,110 @@
+ 			if (this._configurationService.getValue<boolean>('extensions.supportNodeGlobalNavigator')) {
+ 				args.push('--supportGlobalNavigator');
+ 			}
+-			this._extensionHostProcess = cp.fork(FileAccess.asFileUri('bootstrap-fork').fsPath, args, opts);
+-			const pid = this._extensionHostProcess.pid;
+-			this._log(`<${pid}> Launched Extension Host Process.`);
+-
+-			// Catch all output coming from the extension host process
+-			this._extensionHostProcess.stdout!.setEncoding('utf8');
+-			this._extensionHostProcess.stderr!.setEncoding('utf8');
+-			const onStdout = Event.fromNodeEventEmitter<string>(this._extensionHostProcess.stdout!, 'data');
+-			const onStderr = Event.fromNodeEventEmitter<string>(this._extensionHostProcess.stderr!, 'data');
+-			this._register(onStdout((e) => this._log(`<${pid}> ${e}`)));
+-			this._register(onStderr((e) => this._log(`<${pid}><stderr> ${e}`)));
+-
+-			// Lifecycle
+-			this._extensionHostProcess.on('error', (err) => {
+-				this._logError(`<${pid}> Extension Host Process had an error`);
+-				this._logService.error(err);
+-				this._cleanResources();
+-			});
+-
+-			this._extensionHostProcess.on('exit', (code: number, signal: string) => {
+-				this._extensionHostStatusService.setExitInfo(this._reconnectionToken, { code, signal });
+-				this._log(`<${pid}> Extension Host Process exited with code: ${code}, signal: ${signal}.`);
+-				this._cleanResources();
+-			});
++
++			if (process.env['IPADVSCODE_NO_FORK']) {
++				// iOS denies fork()/posix_spawn() to third-party processes
++				// outright -- there is no real ChildProcess to create here.
++				// Run bootstrap-fork.js in-process instead, in a
++				// worker_threads.Worker on the same OS process as
++				// code-server's own server. The exthost protocol only ever
++				// needs a connected socket, not a literal parent/child
++				// relationship -- bootstrap-fork.js and the real exthost
++				// bootstrap chain it loads read their configuration
++				// (including the named-pipe path `writeExtHostConnection`
++				// wrote into `env` above) entirely from env/argv, so they
++				// run correctly regardless of whether they were forked or
++				// are executing in a Worker. See this patch's header for
++				// the worker_threads-support caveat (unverified on device).
++				// Node's worker_threads only accept a curated subset of
++				// V8/Node CLI flags via execArgv -- unlike a real forked
++				// child process, which accepts any flag. Confirmed as a
++				// real failure via a captured node-stdio.log, not assumed:
++				// "ERR_WORKER_INVALID_EXEC_ARGV: Initiated Worker with
++				// invalid execArgv flags: --max-old-space-size=256" --
++				// which was silently taking the whole extension host down
++				// with it ("Failed to start extension host process").
++				// Strip that flag out of the inherited execArgv and
++				// translate it to the Worker-native equivalent
++				// (resourceLimits.maxOldGenerationSizeMb) instead.
++				//
++				// Same real failure, confirmed the same way (a captured
++				// node-stdio.log, not assumed), hit again once the main
++				// process started passing --no-jitless/--no-expose-wasm on
++				// Simulator (see ipad-vscode's NodeRuntimeController.swift):
++				// "ERR_WORKER_INVALID_EXEC_ARGV: Initiated Worker with
++				// invalid execArgv flags: --no-jitless, --no-expose-wasm".
++				// Unlike --max-old-space-size, these have no Worker-native
++				// resourceLimits equivalent to translate to -- but they
++				// also don't need one: jitless/expose_wasm are process-wide
++				// V8 flags (v8::internal::FLAG_jitless and friends), already
++				// applied once via V8::SetFlagsFromCommandLine() when this
++				// main process started, and every Isolate this process
++				// creates afterwards -- including a Worker's -- inherits
++				// that same global flag state automatically. Re-passing
++				// them on the Worker's own execArgv was never necessary;
++				// dropped here rather than translated.
++				const disallowedExecArgvPrefixes = ['--max-old-space-size', '--jitless', '--no-jitless', '--expose-wasm', '--no-expose-wasm'];
++				const workerExecArgv = (opts.execArgv ?? []).filter(a => !disallowedExecArgvPrefixes.some(p => a.startsWith(p)));
++				const maxOldSpaceSizeArg = (opts.execArgv ?? []).find(a => a.startsWith('--max-old-space-size'));
++				const maxOldGenerationSizeMb = maxOldSpaceSizeArg
++					? Number(maxOldSpaceSizeArg.split('=')[1])
++					: undefined;
++				const worker = new Worker(FileAccess.asFileUri('bootstrap-fork').fsPath, {
++					argv: args,
++					env,
++					execArgv: workerExecArgv,
++					resourceLimits: maxOldGenerationSizeMb ? { maxOldGenerationSizeMb } : undefined,
++					stdout: true,
++					stderr: true,
++				});
++				this._extensionHostWorker = worker;
++				this._log(`Launched Extension Host Worker (in-process, no fork on iOS).`);
++
++				worker.stdout.setEncoding('utf8');
++				worker.stderr.setEncoding('utf8');
++				const onStdout = Event.fromNodeEventEmitter<string>(worker.stdout, 'data');
++				const onStderr = Event.fromNodeEventEmitter<string>(worker.stderr, 'data');
++				this._register(onStdout((e) => this._log(`<worker> ${e}`)));
++				this._register(onStderr((e) => this._log(`<worker><stderr> ${e}`)));
++
++				worker.on('error', (err) => {
++					this._logError(`Extension Host Worker had an error`);
++					this._logService.error(err);
++					this._cleanResources();
++				});
++
++				worker.on('exit', (code: number) => {
++					this._extensionHostStatusService.setExitInfo(this._reconnectionToken, { code, signal: null! });
++					this._log(`Extension Host Worker exited with code: ${code}.`);
++					this._cleanResources();
++				});
++			} else {
++				this._extensionHostProcess = cp.fork(FileAccess.asFileUri('bootstrap-fork').fsPath, args, opts);
++				const pid = this._extensionHostProcess.pid;
++				this._log(`<${pid}> Launched Extension Host Process.`);
++
++				// Catch all output coming from the extension host process
++				this._extensionHostProcess.stdout!.setEncoding('utf8');
++				this._extensionHostProcess.stderr!.setEncoding('utf8');
++				const onStdout = Event.fromNodeEventEmitter<string>(this._extensionHostProcess.stdout!, 'data');
++				const onStderr = Event.fromNodeEventEmitter<string>(this._extensionHostProcess.stderr!, 'data');
++				this._register(onStdout((e) => this._log(`<${pid}> ${e}`)));
++				this._register(onStderr((e) => this._log(`<${pid}><stderr> ${e}`)));
++
++				// Lifecycle
++				this._extensionHostProcess.on('error', (err) => {
++					this._logError(`<${pid}> Extension Host Process had an error`);
++					this._logService.error(err);
++					this._cleanResources();
++				});
++
++				this._extensionHostProcess.on('exit', (code: number, signal: string) => {
++					this._extensionHostStatusService.setExitInfo(this._reconnectionToken, { code, signal });
++					this._log(`<${pid}> Extension Host Process exited with code: ${code}, signal: ${signal}.`);
++					this._cleanResources();
++				});
++			}
+ 
+ 			if (extHostNamedPipeServer) {
+ 				extHostNamedPipeServer.on('connection', (socket) => {
+@@ -325,7 +420,7 @@
+ 						this._connectionData = null;
+ 					}
+ 				};
+-				this._extensionHostProcess.on('message', messageListener);
++				this._extensionHostProcess!.on('message', messageListener);
+ 			}
+ 
+ 		} catch (error) {
