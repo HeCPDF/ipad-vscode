@@ -154,11 +154,31 @@ jobs:
             NODE_LOG="$CONTAINER/Documents/Diagnostics/node-stdio.log"
             cp "$NODE_LOG" "artifacts/node-stdio-$i-pre-uitest.log" 2>/dev/null || echo "(no node-stdio.log yet for iteration $i)"
 
+            # Backgrounded (not a plain foreground run) so this loop can
+            # take periodic screenshots while the UI test suite is
+            # actually running -- previously the *only* screenshot this
+            # workflow ever took was the one above, before any UI test
+            # starts, so NativeWorkbenchUITests's native workbench (only
+            # ever opened from inside that test, never at ordinary
+            # launch) had no visual evidence at all, only inferred
+            # console-forwarder log state. 8s between shots, covering
+            # the whole suite (OpenFolderFlowUITests then
+            # NativeWorkbenchUITests, each with real ~40s observation
+            # sleeps), so several land during the native workbench's
+            # window without needing to guess its exact timing.
             xcodebuild test-without-building \
               -xctestrun "$XCTESTRUN" \
               -destination "platform=iOS Simulator,id=$SIM_UDID" \
               -resultBundlePath "/tmp/uitest-results-$i.xcresult" \
-              || echo "::warning::UI test failed on iteration $i"
+              > "artifacts/uitest-xcodebuild-$i.log" 2>&1 &
+            XCODEBUILD_PID=$!
+            n=0
+            while kill -0 "$XCODEBUILD_PID" 2>/dev/null; do
+              n=$((n+1))
+              xcrun simctl io "$SIM_UDID" screenshot "artifacts/uitest-screenshot-$i-$n.png" 2>/dev/null || true
+              sleep 8
+            done
+            wait "$XCODEBUILD_PID" || echo "::warning::UI test failed on iteration $i"
             [ -d "/tmp/uitest-results-$i.xcresult" ] && cp -R "/tmp/uitest-results-$i.xcresult" "artifacts/uitest-results-$i.xcresult" || true
 
             CONTAINER=$(xcrun simctl get_app_container "$SIM_UDID" com.hecpdf.ipadvscode data 2>/dev/null || true)
