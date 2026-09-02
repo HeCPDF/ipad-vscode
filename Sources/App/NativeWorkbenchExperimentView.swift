@@ -42,6 +42,8 @@ struct NativeWorkbenchExperimentView: View {
     // to get real evidence of what the workbench bundle actually does on
     // first render, since WKWebView itself exposes no console delegate.
     private let consoleForwarder = NativeConsoleForwarder()
+    @State private var nativeProbeTimer: Timer?
+    private let log = Logger(subsystem: "com.hecpdf.ipadvscode", category: "nativeworkbench-console")
 
     var body: some View {
         NavigationStack {
@@ -66,7 +68,10 @@ struct NativeWorkbenchExperimentView: View {
                     Button("Close") { dismiss() }
                 }
             }
-            .onDisappear { ipcRelay.disconnect() }
+            .onDisappear {
+                ipcRelay.disconnect()
+                nativeProbeTimer?.invalidate()
+            }
         }
         .task { setUpIfNeeded() }
     }
@@ -103,6 +108,33 @@ struct NativeWorkbenchExperimentView: View {
         if let url = components.url {
             newWebView.load(URLRequest(url: url))
         }
+
+        // Independent of NativeConsoleForwarder's in-page setInterval
+        // heartbeat, which never fired even once across a real ~80s+
+        // Simulator window despite zero captured JS errors -- that's
+        // consistent with the WKWebView's JS thread being genuinely
+        // stuck (a synchronous hang would block a same-context timer
+        // too), but it could also mean something broke in the
+        // in-page->native messageHandler bridge specifically. Polling
+        // from the *native* side via evaluateJavaScript is a
+        // completely separate code path (WebKit's own synchronous
+        // script-evaluation API, not reliant on the page's own timers
+        // or its postMessage bridge still working) -- if this also
+        // never gets a callback, or every callback errors/times out,
+        // that's real confirmation of a true JS-thread-level lockup
+        // rather than an in-page instrumentation gap.
+        nativeProbeTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak newWebView] _ in
+            guard let newWebView else { return }
+            let start = Date()
+            newWebView.evaluateJavaScript("document.readyState + '|' + (document.body ? document.body.children.length : 'null')") { result, error in
+                let elapsed = Date().timeIntervalSince(start)
+                if let error {
+                    self.log.warning("[native-probe] evaluateJavaScript failed after \(elapsed, privacy: .public)s: \(String(describing: error), privacy: .public)")
+                } else {
+                    self.log.warning("[native-probe] evaluateJavaScript returned after \(elapsed, privacy: .public)s: \(String(describing: result), privacy: .public)")
+                }
+            }
+        }
     }
 }
 
@@ -138,7 +170,16 @@ private struct NativeExperimentWebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            log.info("native workbench navigation finished (workbench.html served successfully)")
+            // .warning (not .info): os.Logger's .info level isn't
+            // persisted under log show's default filtering, and whether
+            // this ever fires at all is itself diagnostic -- a
+            // module-script <script type="module"> whose top-level code
+            // never finishes executing (not just an unresolved promise
+            // somewhere downstream, but the load event itself) would
+            // delay or block didFinish exactly the way a real hang was
+            // suspected to (see NativeConsoleForwarder's heartbeat,
+            // which never fired even once across a real ~80s+ window).
+            log.warning("native workbench navigation finished (workbench.html served, load event fired)")
         }
     }
 }
