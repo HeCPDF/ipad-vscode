@@ -48,49 +48,32 @@ jobs:
           mkdir -p Frameworks
           cp -R /tmp/nodejs-mobile-ios/NodeMobile.xcframework Frameworks/
 
-      - name: Fetch and trim code-server build from the code-server fork
+      # Replaces the old "fetch code-server from the HeCPDF/code-server
+      # fork" step: this app now runs vscode's own official
+      # vscode-reh-web-linux-x64 server build (vscode-reh-web-build.yml,
+      # same repo -- built straight from microsoft/vscode source plus the
+      # curated, non-Coder-branded patch subset in vscode-patches/), not
+      # code-server's own CLI wrapper. That workflow already runs
+      # scripts/trim-vscode-reh-web.sh itself before uploading (node-pty
+      # removal, \p{...} regex rewriting, import.meta.dirname polyfill,
+      # missing-crypto-global shim on server-main.js) -- no need to trim
+      # again here, just fetch the already-trimmed artifact.
+      - name: Fetch vscode-reh-web build (official vscode source, this repo's own build)
         env:
-          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          run_id=$(gh run list --repo HeCPDF/code-server --workflow Build --status success --branch main -L 1 --json databaseId -q '.[0].databaseId')
+          run_id=$(gh run list --repo HeCPDF/ipad-vscode --workflow "vscode reh-web build (official source, no code-server fork)" --status success --branch main-yyjpt0 -L 1 --json databaseId -q '.[0].databaseId')
           if [ -z "$run_id" ]; then
-            echo "::error::no successful code-server Build run found"
+            echo "::error::no successful vscode-reh-web-build.yml run found"
             exit 1
           fi
-          echo "using code-server run $run_id"
-          gh run download "$run_id" --repo HeCPDF/code-server --name linux-x64-package --dir /tmp/code-server-pkg
-          mkdir -p /tmp/code-server-release
-          tar -xzf /tmp/code-server-pkg/package.tar.gz -C /tmp/code-server-release
-          bash scripts/trim-code-server.sh /tmp/code-server-release/release
-          mkdir -p Sources/App/Resources/code-server
-          cp -R /tmp/code-server-release/release/. Sources/App/Resources/code-server/
+          echo "using vscode-reh-web-build run $run_id"
+          mkdir -p Sources/App/Resources/vscode-server
+          gh run download "$run_id" --repo HeCPDF/ipad-vscode --name vscode-reh-web-linux-x64 --dir Sources/App/Resources/vscode-server
           echo "--- resources on disk before xcodegen generate ---"
           ls -la Sources/App/Resources/
-          find Sources/App/Resources/code-server -maxdepth 1 | head -5
-          find Sources/App/Resources/code-server | wc -l
-
-      # Best-effort, not required for the app to build or ship: backs
-      # NativeWorkbenchExperimentView.swift's experimental menu item, not
-      # the app's real startup path (still code-server, above). Unlike the
-      # nodejs-mobile/code-server fetches this deliberately never fails the
-      # job -- a missing or stale vscode-desktop-build-experiment.yml
-      # artifact should just make that one menu item report "not
-      # available" (VSCodeFileSchemeHandler's failable init), not break
-      # every other build.
-      - name: Fetch vscode desktop bundle (experimental native workbench, best-effort)
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
-        run: |
-          run_id=$(gh run list --repo HeCPDF/ipad-vscode --workflow "vscode desktop build experiment" --status success --branch main-yyjpt0 -L 1 --json databaseId -q '.[0].databaseId')
-          if [ -z "$run_id" ]; then
-            echo "::warning::no successful vscode-desktop-build-experiment.yml run found -- skipping (experimental feature only)"
-            exit 0
-          fi
-          echo "using vscode-desktop-build-experiment run $run_id"
-          mkdir -p Sources/App/Resources/vscode-desktop
-          gh run download "$run_id" --repo HeCPDF/ipad-vscode --name vscode-desktop-bundle --dir Sources/App/Resources/vscode-desktop
-          find Sources/App/Resources/vscode-desktop | wc -l
+          find Sources/App/Resources/vscode-server -maxdepth 2 | head -20
+          find Sources/App/Resources/vscode-server | wc -l
 
       - name: Generate Xcode project
         run: xcodegen generate

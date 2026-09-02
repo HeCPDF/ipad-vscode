@@ -53,21 +53,15 @@ targets:
       - path: Sources/Shared
       - path: Sources/App/Resources/server.js
         buildPhase: resources
-      # Folder reference (not a group): code-server's build output is tens
-      # of thousands of files, and Xcode's per-file "Copy Bundle
+      # Folder reference (not a group): vscode's reh-web build output is
+      # tens of thousands of files, and Xcode's per-file "Copy Bundle
       # Resources" phase would be prohibitively slow / prone to CI
       # timeouts at that count. A folder reference copies the directory
-      # as one unit instead.
-      - path: Sources/App/Resources/code-server
-        type: folder
-        optional: true
-        buildPhase: resources
-      # electron-browser workbench bundle (out-vscode-min), fetched by
-      # build.yml the same way as code-server above -- backs
-      # VSCodeFileSchemeHandler's vscode-file://vscode-app/... scheme.
-      # See README.md's "Architecture pivot" section and
-      # NativeWorkbenchExperimentView.swift.
-      - path: Sources/App/Resources/vscode-desktop
+      # as one unit instead. Built straight from microsoft/vscode source
+      # by vscode-reh-web-build.yml (fetched by build.yml) -- replaces the
+      # old Sources/App/Resources/code-server (HeCPDF/code-server fork)
+      # entry; see NodeRuntimeController.swift and README.md.
+      - path: Sources/App/Resources/vscode-server
         type: folder
         optional: true
         buildPhase: resources

@@ -2,12 +2,15 @@ import Foundation
 import NodeMobile
 import os
 
-/// Owns code-server's Node runtime, running in-process (this is the App's
-/// own process — not a NEPacketTunnelProvider extension). The real Node
-/// extension host runs in-process too, inside code-server's own Node
-/// instance via `worker_threads`, patched in the code-server fork's
-/// `patches/ios-exthost-no-fork.diff` — nothing on the Swift side launches
-/// it.
+/// Owns vscode's own Node runtime, running in-process (this is the App's
+/// own process — not a NEPacketTunnelProvider extension). This runs vscode's
+/// real, official `vscode-reh-web-linux-x64` server build straight from
+/// microsoft/vscode source (see vscode-reh-web-build.yml and
+/// vscode-patches/) — not the HeCPDF/code-server fork's own CLI wrapper.
+/// The real Node extension host runs in-process too, inside this same Node
+/// instance via `worker_threads`, patched by
+/// `vscode-patches/ios-exthost-no-fork.diff` — nothing on the Swift side
+/// launches it.
 ///
 /// This replaces an earlier design using two NEPacketTunnelProvider
 /// extensions purely as a way to get long-lived, independently-launchable
@@ -38,7 +41,7 @@ final class NodeRuntimeController: ObservableObject {
 
     private init() {}
 
-    /// Starts the audio keep-alive and code-server's Node runtime. Safe to
+    /// Starts the audio keep-alive and vscode's own Node runtime. Safe to
     /// call more than once (e.g. scenePhase changes) — only the first call
     /// does anything.
     func start() async {
@@ -65,7 +68,7 @@ final class NodeRuntimeController: ObservableObject {
     /// Also persists the bookmark (`WorkspaceSelection.store`) so
     /// `startNodeRuntime()`'s own `resolveBookmark` call can pre-authorize
     /// this same folder's security scope on the next launch, before
-    /// code-server's own last-opened-folder mechanism tries to reopen it.
+    /// vscode's own last-opened-folder mechanism tries to reopen it.
     /// Last authorized wins if more than one folder is authorized in a
     /// session (e.g. Add Folder to Workspace) — there's only one bookmark
     /// slot; extending this to remember every folder in a multi-root
@@ -217,34 +220,45 @@ final class NodeRuntimeController: ObservableObject {
     /// `node_start` runs Node's event loop and does not return in normal
     /// operation, so it must never be called on the main thread.
     ///
-    /// This launches code-server's real, unmodified entry point (the only
-    /// things scripts/trim-code-server.sh removes are node-pty — a real iOS
-    /// sandbox hard-wall, see that script — and node_modules/.bin symlinks,
-    /// a Windows IPA-tooling compatibility fix unrelated to iOS) rather
-    /// than the toy placeholder server. `--auth none` is a local default,
-    /// not a feature removal: this process is unreachable from outside the
+    /// This launches vscode's own real, unmodified `server-main.js` entry
+    /// point (built by vscode-reh-web-build.yml straight from
+    /// microsoft/vscode source, trimmed by scripts/trim-vscode-reh-web.sh
+    /// the same way scripts/trim-code-server.sh trimmed the old
+    /// code-server-fork build: node-pty removed as a real iOS sandbox
+    /// hard-wall, node_modules/.bin symlinks removed as a Windows
+    /// IPA-tooling fix, plus the nodejs-mobile runtime-capability
+    /// polyfills). `--without-connection-token` is a local default, not a
+    /// feature removal: this process is unreachable from outside the
     /// device (127.0.0.1 loopback only, nothing forwards the port
     /// externally), so there is no one to authenticate against.
     ///
-    /// No workspace path is passed on the command line — code-server
-    /// starts with no folder open (its own "Editor Evolved" welcome page,
-    /// matching real VSCode/code-server behavior) or reopens whatever it
-    /// last had open via its own settings, exactly like the desktop app.
+    /// No workspace path is passed on the command line — the server starts
+    /// with no folder open (vscode's own Welcome page) or reopens whatever
+    /// it last had open via its own settings, exactly like the desktop app.
     ///
     /// If a workspace bookmark already exists (a folder picked in a
     /// previous session), it's still resolved and authorized here at
     /// startup — not to pass on the command line, but so the security
-    /// scope is already active in case code-server's own last-opened-folder
+    /// scope is already active in case vscode's own last-opened-folder
     /// mechanism tries to reopen it.
     ///
     /// Not yet verified at runtime (no device/simulator in this pipeline)
     /// beyond what CI's Simulator smoke test covers — this is the entry
-    /// point the real server SHOULD be started with per `src/node/cli.ts`,
-    /// not something that has been observed to boot on a real device.
+    /// point the real server SHOULD be started with per
+    /// `src/vs/server/node/server.cli.ts`'s own option parsing, not
+    /// something that has been observed to boot on a real device yet.
     private func startNodeRuntime() {
-        let bundledEntry = Bundle.main.bundlePath + "/code-server/out/node/entry.js"
+        // vscode-reh-web-build.yml's own output layout (gulpfile.reh.ts's
+        // packageTask) isn't hardcoded here on purpose -- it was being
+        // confirmed for the first time by that same CI run when this was
+        // written. Searching by filename under the resource directory
+        // avoids a second silent layout-mismatch bug like the one already
+        // hit and fixed once for the Electron desktop bundle (see README's
+        // "ninth real bug").
+        let vscodeServerDir = Bundle.main.bundlePath + "/vscode-server"
+        let bundledEntry = Self.findServerMainJS(under: vscodeServerDir)
         let placeholderEntry = Bundle.main.path(forResource: "server", ofType: "js") ?? "server.js"
-        let entryScript = FileManager.default.fileExists(atPath: bundledEntry) ? bundledEntry : placeholderEntry
+        let entryScript = bundledEntry ?? placeholderEntry
 
         if let bookmarked = WorkspaceSelection.resolveBookmark(in: RuntimeConfig.privateStorageURL) {
             if bookmarked.startAccessingSecurityScopedResource() {
@@ -365,10 +379,30 @@ final class NodeRuntimeController: ObservableObject {
         #endif
         if entryScript == bundledEntry {
             arguments += [
-                "--auth", "none",
-                "--bind-addr", "127.0.0.1:\(RuntimeConfig.loopbackPort)",
+                "--host", "127.0.0.1",
+                "--port", "\(RuntimeConfig.loopbackPort)",
+                // vscode's own native no-auth mode -- distinct from
+                // code-server's own separate `--auth` flag (which no
+                // longer exists here; logout.diff, the only thing that
+                // added it, was one of the Coder-brand patches this
+                // project deliberately dropped). Same loopback-only
+                // reasoning as before: nothing forwards this port off the
+                // device, so there's no one to hand a connection token to.
+                "--without-connection-token",
                 "--disable-telemetry",
                 "--disable-update-check",
+                // server-data-dir defaults to something under $HOME if
+                // unset, which configureHomeEnvironment() above already
+                // repoints at a writable location -- but pointing this
+                // explicitly at RuntimeConfig.privateStorageURL matches
+                // the same defensive pattern already proven necessary once
+                // (see configureHomeEnvironment()'s own doc comment: a
+                // real device's unwritable container root took the whole
+                // process down via an uncaught EPERM from a bare mkdir)
+                // rather than trusting a chain of default-derivation logic
+                // that hasn't itself been observed on a real device yet.
+                "--server-data-dir", RuntimeConfig.privateStorageURL
+                    .appendingPathComponent("vscode-server-data", isDirectory: true).path,
                 // vscode's own resolveShellEnv() (server-main.js) spawns a
                 // real shell (SHELL env var, falling back to os.userInfo()
                 // .shell, falling back to a hardcoded "sh") to capture the
@@ -378,37 +412,19 @@ final class NodeRuntimeController: ObservableObject {
                 // arbitrary child processes to third-party apps outright
                 // (the same sandbox wall as cp.fork() elsewhere in this
                 // project), so that spawn always fails with ENOENT,
-                // confirmed via a real captured node-stdio.log: "Unable to
-                // resolve your shell environment: A system error occurred
-                // (spawn sh ENOENT)" -- which was taking the real extension
-                // host down with it ("Failed to start extension host
-                // process"), not just degrading gracefully.
-                // force-disable-user-env is vscode's own server CLI flag
-                // for skipping this step entirely (checked first, before
-                // any spawn is attempted) -- code-server has no dedicated
-                // flag for it, so pass it through via its existing
-                // --vscode-option escape hatch (parseVscodeOptions in
-                // src/node/cli.ts) rather than patching code-server itself.
-                "--vscode-option", "force-disable-user-env",
-                // Real bug found via the Simulator screenshot this
-                // project's own bug-hunting captures (launch-*.png): the
-                // Welcome page's big heading read "code-server" -- not a
-                // rendering glitch, just code-server's own real, unmodified
-                // upstream branding, since nothing here was overriding it.
-                // Traced to source: gettingStarted.ts's
-                // `$('h1.product-name.caption', {}, this.productService.nameLong)`
-                // (the Welcome page's H1) reads `productService.nameLong`,
-                // which code-server's own `app-name.diff` patch already
-                // wires up to a `--app-name` CLI flag (setting
-                // `nameShort`/`nameLong` in the per-request product
-                // configuration `webClientServer.ts` injects into the web
-                // client's bootstrap) -- that patch was already in this
-                // project's patch series, just never actually invoked from
-                // here. Matches the app's own project name (project.yml's
-                // `name: iPadVSCode`), not left as the implementation
-                // detail ("code-server") a user shouldn't need to know
-                // about.
-                "--app-name", "iPad VSCode",
+                // confirmed via a real captured node-stdio.log against the
+                // old code-server-fork build: "Unable to resolve your
+                // shell environment: A system error occurred (spawn sh
+                // ENOENT)" -- which was taking the real extension host
+                // down with it ("Failed to start extension host process"),
+                // not just degrading gracefully. force-disable-user-env is
+                // vscode's own native top-level server CLI flag for
+                // skipping this step entirely (checked first, before any
+                // spawn is attempted) -- passed directly now rather than
+                // through code-server's own --vscode-option escape hatch,
+                // since this is vscode's own server.cli.ts parsing it
+                // natively.
+                "--force-disable-user-env",
             ]
         }
 
@@ -427,6 +443,36 @@ final class NodeRuntimeController: ObservableObject {
                 _ = node_start(Int32(buffer.count), buffer.baseAddress)
             }
         }
+    }
+
+    /// vscode's own gulp `vscode-reh-web-linux-x64-min-ci` task (see
+    /// vscode-reh-web-build.yml) places `server-main.js` at the root of its
+    /// output directory per `gulpfile.reh.ts`'s `packageTask`, matching how
+    /// real vscode-server downloads (e.g. what Remote-Tunnels/Remote-SSH
+    /// fetch onto a remote machine) are laid out too -- but that's read
+    /// from CI-run evidence being confirmed at the same time this was
+    /// written, not from a stable, long-established contract, so this
+    /// searches a couple of levels deep by filename instead of hardcoding
+    /// a single guessed path.
+    private static func findServerMainJS(under directory: String) -> String? {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: directory, isDirectory: &isDir), isDir.boolValue else { return nil }
+        guard let enumerator = fm.enumerator(
+            at: URL(fileURLWithPath: directory),
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        for case let url as URL in enumerator {
+            if enumerator.level > 3 {
+                enumerator.skipDescendants()
+                continue
+            }
+            if url.lastPathComponent == "server-main.js" {
+                return url.path
+            }
+        }
+        return nil
     }
 }
 
