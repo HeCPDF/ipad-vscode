@@ -2,86 +2,66 @@
 
 Read this first. `README.md` has the full narrative history (every bug found and fixed, with source citations) — this file is the short "what's the state right now, what do I do next" pointer into it. Update this file at the end of any session that changes the architecture, not just README.
 
-## Current goal (as of 2026-09-02)
+## Current goal (as of 2026-09-07)
 
-Switch the app's server payload from `HeCPDF/code-server` (Coder's fork) to
-building `vscode-reh-web` straight from official `microsoft/vscode` source,
-keep the existing nodejs-mobile-in-process architecture, minimize
-remote-authority UI traces (Settings editor's "Remote" tab, status bar).
+The vscode-reh-web pivot (switching the app's server payload from `HeCPDF/code-server`
+to building `vscode-reh-web` straight from official `microsoft/vscode` source) is
+**confirmed working end to end in the Simulator** — see README's "CONFIRMED
+(2026-09-06/09-07)" block under the vscode-reh-web pivot section for the real evidence
+(log excerpts, screenshots). This was the open item at the top of this file as of
+2026-09-02; it's done. Read that README block before doing anything else this session —
+don't re-run the verification steps below, they're already done and evidence-backed.
 
 The earlier "real Electron desktop bundle in WKWebView" pivot
 (`NativeWorkbenchExperimentView.swift`) is **abandoned for good** — iOS
 cannot host a real Electron/Chromium main process, full stop, not a
 tooling gap. See README's "Electron-desktop pivot ... is abandoned" section
-before ever reconsidering that direction.
+before ever reconsidering that direction. Its CI hook (`NativeWorkbenchUITests`,
+`-UITestOpenNativeWorkbench`) still runs in `simulator-test.yml` and will keep
+showing "Native bundle not found" — expected, not a regression, not worth
+investigating again.
 
 ## Where things actually stand — CHECK THIS FIRST
 
-The last thing done this session was pushing a fix for a real crash found
-via actual Simulator evidence, and triggering a rebuild. **That rebuild's
-result was never observed** — the session was stopped by the user before
-it finished. Next session's first move should be:
+Confirmed this session (2026-09-07), each checked directly rather than trusted from a
+green checkmark:
+- `vscode-reh-web-build.yml` run `33641059792` (pending as of the 2026-09-02 handoff) —
+  **succeeded**.
+- `build.yml` run `34043104925` (2026-09-06, triggered by someone/something between
+  sessions, not recorded anywhere before now) — **succeeded**.
+- `simulator-test.yml` run `34043323244` (2026-09-06) — **succeeded**, and its
+  `simulator-test-results` artifact was downloaded and actually read:
+  `node-stdio-1-pre/post-uitest.log` show the server binding, the extension host Worker
+  launching and staying up, and zero occurrences of every previously-fatal error
+  signature this project has ever hit. `uitest-screenshot-1-2.png`/`-8.png` show the
+  real vscode "Code - OSS" welcome page and Chat panel actually rendered in the
+  WKWebView. Only expected/already-documented errors remain (`spdlog` dlopen,
+  `deviceid` unsupported-platform, `ptyHost`/`spawn sh ENOENT` — no real shell on iOS).
+- A fresh `build.yml` run was also triggered this session (`34087240816`) as a
+  redundant double-check before the pre-existing 09-06 run was found — it **also
+  succeeded**, reproducing the same result. No new commit was needed for either rebuild;
+  `main-yyjpt0`'s HEAD (`6a240d7`) hasn't changed.
 
-1. Check `vscode-reh-web-build.yml` run `33641059792`
-   (https://github.com/HeCPDF/ipad-vscode/actions/runs/33641059792) — was
-   still `in_progress` as of 2026-09-02T14:26:34Z, ~9 min into a build that
-   normally takes ~12-13 min. Check whether it succeeded or failed.
-   - If it failed: pull the job logs, diagnose for real (don't guess),
-     fix, commit, push. This is a normal vscode gulp build off official
-     source at a pinned commit — code-server's own CI builds the same
-     target successfully, so a failure here is almost certainly this
-     project's own patch/script issue, not upstream.
-   - If it succeeded: continue to step 2.
-2. Trigger `build.yml` (`workflow_dispatch`, branch `main-yyjpt0`) to
-   compile the full app against the new artifact.
-3. `workflow_run` auto-triggering of `simulator-test.yml` from `build.yml`
-   **does not actually work on this branch** (confirmed empirically —
-   23+ historical runs were all manual `workflow_dispatch`, likely because
-   the trigger definition needs to live on the repo's default branch,
-   which isn't `main-yyjpt0`). After `build.yml` finishes, manually
-   trigger `simulator-test.yml` yourself with `workflow_dispatch`, passing
-   `run_id: "<the build.yml run id>"`.
-4. Once `simulator-test.yml` completes, **download and actually read the
-   `simulator-test-results` artifact** — don't trust a green checkmark.
-   `node-stdio-1-pre-uitest.log` / `node-stdio-1-post-uitest.log` are
-   where `NodeRuntimeController`'s Node process output lands; that's where
-   you'll see whether `server-main.js` actually started and bound to the
-   loopback port, or crashed again. The `uitest-screenshot-1-*.png` series
-   shows what the WKWebView actually rendered.
+**Next session's first move**: there is no pending/unverified build right now. Pick a
+next concrete task from README's "Not done yet" list. In rough order of
+CI-actionability (things that don't require a physical iPad or a Mac dev environment):
+1. Re-check whether `ServerAgentHostManager: agent host failed to start Error: spawn
+   EPERM` (a code-server-era bug, never re-confirmed against vscode-reh-web) actually
+   reproduces here — it didn't show up in the 09-06 log, but no extension needing the
+   agent host was activated in that run either. Would need a test that actually
+   activates such an extension to know for sure either way.
+2. `experiment-sqlite3-ios.yml`'s stuck gyp-cache investigation (see README's "Not done
+   yet" — real root cause found for `-fno-exceptions`/`-fno-rtti`, fix still elusive;
+   five attempts at the `common.gypi`/`binding.gyp` source level have failed
+   identically — next step is finding gyp's actual config cache location, not another
+   attempt at the same two files).
+3. Dynamic native menu bar / `nativeHost` channel work (README's "Not yet done" under
+   the menu-bridge section) — a materially larger undertaking, comparable in scope to
+   the JIT/TXM work, not a quick follow-on patch.
 
-## What's already fixed and verified this session (don't redo)
-
-- `vscode-reh-web-build.yml` run 4 (`33593159098`) succeeded and its
-  artifact was **directly downloaded and inspected**: `out/server-main.js`
-  present, `product.json` confirmed stock `"Code - OSS"` identity (no
-  rebrand — the user explicitly asked for vscode's own real identity, not
-  a custom "iPad VSCode" name), `node-pty` removed, zero `"coder"` strings
-  anywhere.
-- `build.yml` run `33594091357` compiled the full app successfully against
-  that artifact (both device and Simulator targets) — `NodeRuntimeController.swift`'s
-  new code compiles clean.
-- `simulator-test.yml` run `33594380400` actually ran the app in Simulator
-  and **crashed** — real evidence pulled from the artifact's
-  `node-stdio-1-pre-uitest.log`: `ReferenceError: require is not defined
-  in ES module scope`. Root cause: vscode's `server-main.js` ships as an
-  ES module (`"type": "module"` in its `package.json`), but
-  `scripts/trim-vscode-reh-web.sh`'s crypto polyfill shim (copied from
-  `trim-code-server.sh`, which targets a CommonJS file) used
-  `require("crypto")`. Fixed in commit `73cdff1`:
-  `(await import("node:crypto")).webcrypto` instead — valid at the top of
-  an ES module via top-level await. Verified the syntax locally with a
-  throwaway Node script before pushing (see commit message).
-- `ios-remote-label.diff` (commit `d0c972b`) registers a `LabelService`
-  formatter so the Settings editor's Remote tab and the status-bar remote
-  indicator show "This iPad" instead of the raw `127.0.0.1:8482` loopback
-  string. This is a label-only fix — it does **not**, and by design
-  *cannot*, remove the Settings editor's User/Remote split itself (that's
-  gated on `remoteAuthority` being set at all, which vscode-web's own
-  `workbench.ts` does unconditionally for every web connection — not
-  something a patch should touch; see README for why this was a
-  deliberate stop-here decision, same risk judgment that ended the
-  Electron path). **Not yet verified in a real Simulator run** — no
-  screenshot has ever shown the Settings editor open with this build.
+Real-device-only items (JIT/TXM, background audio keep-alive, real sandboxing
+differences) can't progress without a physical iPad in this pipeline — don't attempt to
+simulate confidence on those; say plainly they're unverified if asked.
 
 ## Architecture facts worth knowing before touching this again
 
@@ -112,6 +92,10 @@ it finished. Next session's first move should be:
 - Pinned vscode commit: `08d4889f9ec4a1685d257b9b95de036c8e1ce1e5` (same
   one used by the now-abandoned Electron experiment, kept for
   consistency — a real, already-verified-buildable commit, not a guess).
+- A successful `vscode-reh-web-build.yml` run is itself a real `tsc` pass over every
+  patch in the series (the gulp task it runs compiles TypeScript for real) — no need to
+  set up a separate local vscode build environment just to re-verify a patch applies
+  and type-checks; a green build IS that verification now.
 
 ## Known, permanent ceilings — not bugs, don't try to "fix" these
 
