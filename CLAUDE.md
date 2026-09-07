@@ -45,11 +45,22 @@ green checkmark:
 **Next session's first move**: there is no pending/unverified build right now. Pick a
 next concrete task from README's "Not done yet" list. In rough order of
 CI-actionability (things that don't require a physical iPad or a Mac dev environment):
-1. Re-check whether `ServerAgentHostManager: agent host failed to start Error: spawn
-   EPERM` (a code-server-era bug, never re-confirmed against vscode-reh-web) actually
-   reproduces here — it didn't show up in the 09-06 log, but no extension needing the
-   agent host was activated in that run either. Would need a test that actually
-   activates such an extension to know for sure either way.
+1. `ServerAgentHostManager: agent host failed to start Error: spawn EPERM` — **root
+   cause located this session** (2026-09-07), not yet fixed. It's vscode's built-in AI
+   chat/agent host ("Build with Agent" panel), not the extension host:
+   `nodeAgentHostStarter.ts` → `ipc.cp.ts`'s `Client` does a real, unconditional
+   `child_process.fork()` with no `_canSendSocket`-style escape hatch, and that file's
+   `Client`/`Server` pair talk over `process.send`/`process.on('message')`, which a
+   `worker_threads.Worker` doesn't have (only `parentPort.postMessage`) — so fixing this
+   needs both sides of the protocol patched in lockstep, not just the launch call. See
+   README's "Located (2026-09-07)" block (in the "extension host still doesn't
+   actually start" section) for the full read of all three source files and why a
+   patch should be scoped to `nodeAgentHostStarter.ts`'s call site specifically rather
+   than `ipc.cp.ts` generally (that file is shared with the file watcher and pty host,
+   both already broken here for unrelated reasons). Not attempted: no CI test exercises
+   the agent host at all, so a patch here can only be verified by "does the build still
+   compile," not by real behavior — decide deliberately whether that's good enough
+   before writing it, rather than shipping it blind.
 2. `experiment-sqlite3-ios.yml`'s stuck gyp-cache investigation (see README's "Not done
    yet" — real root cause found for `-fno-exceptions`/`-fno-rtti`, fix still elusive;
    five attempts at the `common.gypi`/`binding.gyp` source level have failed
