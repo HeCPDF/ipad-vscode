@@ -22,26 +22,39 @@ path. Meant to be removed (or converted into a real fix) once a captured
 log shows what's actually consuming memory during the one-time
 cold-launch path this crash is confined to.
 
-First attempt at this patch failed vscode-reh-web-build.yml's own
-tsgo-typecheck for real (run 36025966651):
+Two real tsc failures along the way, both caught by
+vscode-reh-web-build.yml itself, not guessed:
 
-  src/bootstrap-fork.ts(281,11): error TS2339: Property 'unref' does not
-  exist on type 'TimeoutHandle'.
+1. (run 36025966651) `src/bootstrap-fork.ts(281,11): error TS2339:
+   Property 'unref' does not exist on type 'TimeoutHandle'.` -- assumed
+   this was a DOM-vs-Node ambient overload conflict and "fixed" by
+   importing setInterval explicitly from 'node:timers'.
+2. (run 36027428354) Same exact error persisted after that "fix". Real
+   root cause, found by actually reading src/typings/base-common.d.ts and
+   src/tsconfig.json rather than guessing again: this codebase
+   deliberately excludes @types/node from tsconfig's `types` array and
+   instead declares its own global `Timeout`/`TimeoutHandle` type (a
+   branded opaque type, `readonly _: never`, explicitly to keep the same
+   timer-using code portable between the browser and Node contexts) --
+   with no `.unref()`/`.ref()` on it anywhere, on purpose. There is no
+   real `NodeJS.Timeout` available in this compilation at all, so
+   importing 'node:timers' doesn't help either; it resolves to the same
+   opaque type. Every other timer use in this codebase (ipc.net.ts,
+   notificationsToasts.ts, etc.) already works within this constraint by
+   simply never calling .unref().
 
-Root cause: this tsconfig includes both Node and DOM lib types, and a
-bare `setInterval(...)` call resolves to the DOM lib's overload (which
-returns a plain numeric handle with no `.unref()`/`.ref()`), not Node's
-`NodeJS.Timeout`. Fixed by importing Node's own `setInterval` explicitly
-from `node:timers` instead of relying on ambient global overload
-resolution -- matching how this same file already prefers explicit
-`node:*` imports (`node:buffer`, `node:crypto`) over bare globals for
-exactly this kind of ambiguity.
+Fixed by dropping the .unref() call entirely -- not needed here anyway,
+since this interval only ever runs inside a worker_threads.Worker that
+gets force-terminated via Worker.terminate() on cleanup
+(extensionHostConnection.ts's disposeClient()), never drained via a
+graceful process exit an un-ref'd handle would otherwise be needed to
+unblock.
 
 Index: code-server/lib/vscode/src/bootstrap-fork.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/bootstrap-fork.ts
 +++ code-server/lib/vscode/src/bootstrap-fork.ts
-@@ -258,6 +258,35 @@
+@@ -258,6 +258,43 @@
  	(globalThis as any).crypto = (await import('node:crypto')).webcrypto;
  }
 
@@ -61,17 +74,25 @@ Index: code-server/lib/vscode/src/bootstrap-fork.ts
 +// problem.
 +if (process.env['VSCODE_ESM_ENTRYPOINT'] === 'vs/workbench/api/node/extensionHostProcess') {
 +	const v8 = await import('node:v8');
-+	// Bare `setInterval` resolves to the DOM lib's overload in this
-+	// tsconfig (returning a plain number/TimeoutHandle with no .unref()),
-+	// not Node's -- import Node's own timer functions explicitly instead
-+	// of relying on ambient overload resolution, matching how this file
-+	// already prefers explicit `node:*` imports over bare globals.
-+	const { setInterval: nodeSetInterval } = await import('node:timers');
-+	nodeSetInterval(() => {
++	// This codebase's own src/typings/base-common.d.ts deliberately
++	// redeclares the global setTimeout/setInterval to return an opaque
++	// `Timeout`/`TimeoutHandle` (no .unref()/.ref()) so the same code
++	// compiles under both the browser and Node type surfaces -- src/tsconfig.json
++	// excludes @types/node from `types` entirely, so there is no real
++	// NodeJS.Timeout available to import your way back to here either
++	// (confirmed: importing setInterval from 'node:timers' still resolves
++	// to this same opaque Timeout type in this tsconfig, a real tsc
++	// failure caught by vscode-reh-web-build.yml, not assumed). Not
++	// calling .unref() is fine here regardless: this interval only ever
++	// runs inside a worker_threads.Worker that gets force-terminated via
++	// Worker.terminate() on cleanup (extensionHostConnection.ts's
++	// disposeClient()), never drained via a graceful process exit that an
++	// un-ref'd handle would need to unblock.
++	setInterval(() => {
 +		const mem = process.memoryUsage();
 +		const heap = v8.getHeapStatistics();
 +		process.stderr.write(`[iOS-DIAG heap] rss=${(mem.rss / 1048576).toFixed(1)}MB heapUsed=${(mem.heapUsed / 1048576).toFixed(1)}MB heapTotal=${(mem.heapTotal / 1048576).toFixed(1)}MB external=${(mem.external / 1048576).toFixed(1)}MB v8UsedHeap=${(heap.used_heap_size / 1048576).toFixed(1)}MB v8TotalHeap=${(heap.total_heap_size / 1048576).toFixed(1)}MB v8HeapLimit=${(heap.heap_size_limit / 1048576).toFixed(1)}MB\n`);
-+	}, 1000).unref();
++	}, 1000);
 +}
 +
  // Bootstrap ESM
