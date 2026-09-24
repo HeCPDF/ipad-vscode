@@ -31,20 +31,32 @@ takes over), which is why this had gone unnoticed: the UI still renders
 correctly a few seconds later, no visible crash, just a slower, wasteful
 cold start on every single boot.
 
-First fix attempt used 512MB -- re-verified via a second
-simulator-test.yml run (35972671722) and found only a marginal
-improvement, not a real fix: the OOM+restart pattern was gone in one of
-that run's two app launches (pre-/post-UI-test) but still present in the
-other, same build and code, apparently non-deterministic depending on
-extension-activation timing/ordering. Raised to 1024MB for real headroom
-instead of chasing the exact minimum that happens to survive one
-particular run.
+This went through two rounds of "fix, re-verify against a real
+simulator-test.yml log, discover it's not quite enough, raise it" before
+landing on a value that survives repeated real testing:
+
+- 512MB: re-verified via simulator-test.yml run 35972671722 -- the
+  OOM+restart pattern was gone in one of the run's two app launches but
+  still present in the other. Only a marginal fit.
+- 1024MB: re-verified via a repeat=2 simulator-test.yml run (35975535474,
+  4 total app launches): the very first, cold-cache launch after a fresh
+  `simctl install` (the "pre-uitest" snapshot) OOM'd 2/2 times, while the
+  second, warm launch a UI test's own relaunch triggers moments later on
+  the same already-installed app (the "post-uitest" snapshot, benefiting
+  from the OS/simulator page cache the first launch just warmed) never
+  did, 2/2 times -- consistent with a transient memory spike during a
+  slow, cold-disk startup (many extension manifests/JS files read and
+  parsed concurrently) rather than a steady-state heap need, not the
+  "random timing" it first looked like at 512MB.
+- 2048MB: raised again for headroom against that cold-start spike
+  specifically, the scenario a real user's very first launch after
+  installing (or an iOS-evicted relaunch) would also hit.
 
 Index: code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/server/node/extensionHostConnection.ts	2026-09-24 07:40:15.108117997 +0000
-+++ code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts	2026-09-24 08:13:33.105965934 +0000
-@@ -347,15 +347,47 @@
++++ code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts	2026-09-24 08:47:51.270088277 +0000
+@@ -347,15 +347,63 @@
  				// dropped here rather than translated.
  				const disallowedExecArgvPrefixes = ['--max-old-space-size', '--jitless', '--no-jitless', '--expose-wasm', '--no-expose-wasm'];
  				const workerExecArgv = (opts.execArgv ?? []).filter(a => !disallowedExecArgvPrefixes.some(p => a.startsWith(p)));
@@ -85,9 +97,25 @@ Index: code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts
 +				// still present in the other (same build, same code,
 +				// non-deterministic depending on extension-activation
 +				// timing/ordering), so 512MB is only a marginal fit, not a
-+				// real fix. Raised further for real headroom rather than
-+				// chasing the exact minimum.
-+				const extHostMaxOldGenerationSizeMb = 1024;
++				// real fix. Raised to 1024.
++				//
++				// UPDATE 2: 1024 narrowed it further but still didn't fully
++				// close it -- verified via a repeat=2 simulator-test.yml run
++				// (35975535474, 4 total app launches): the very first,
++				// cold-cache launch after a fresh `simctl install` (the
++				// "pre-uitest" snapshot) OOM'd 2/2 times, while the second,
++				// warm launch a UI test's own relaunch triggers moments
++				// later on the same already-installed app (the
++				// "post-uitest" snapshot, benefiting from the OS/simulator
++				// page cache the first launch just warmed) never did, 2/2
++				// times -- consistent with a transient memory spike during
++				// a slow, cold-disk startup (many extension manifests/JS
++				// files read and parsed concurrently) rather than a
++				// steady-state heap need. Raised again for headroom against
++				// that cold-start spike specifically, the scenario a real
++				// user's very first launch after installing (or an
++				// iOS-evicted relaunch) would also hit.
++				const extHostMaxOldGenerationSizeMb = 2048;
  				const worker = new Worker(FileAccess.asFileUri('bootstrap-fork').fsPath, {
  					argv: args,
  					env,
