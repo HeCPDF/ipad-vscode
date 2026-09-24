@@ -27,3 +27,4 @@ ios-node18-globals-polyfill.diff
 ios-remote-label.diff
 copilot.diff
 ios-agenthost-no-fork.diff
+ios-ptyhost-force-disable-user-env.diff

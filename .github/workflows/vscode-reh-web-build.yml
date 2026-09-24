@@ -126,6 +126,14 @@ jobs:
           # which has no worker_threads equivalent at all.
           apply ios-agenthost-no-fork
 
+          # ptyHostService's own shell-env resolution passed a hardcoded
+          # empty args object instead of the real parsed argv, so
+          # --force-disable-user-env could never reach it -- real gap,
+          # confirmed via a captured node-stdio.log, not iOS-specific
+          # (wastes a shell spawn on any host) but only fatal here since
+          # iOS denies spawning `sh` at all.
+          apply ios-ptyhost-force-disable-user-env
+
           rejects=$(find . -name "*.rej")
           if [ -n "$rejects" ]; then
             echo "::error::unresolved patch rejects:"

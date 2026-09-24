@@ -1,0 +1,56 @@
+Thread --force-disable-user-env through to ptyHost's own shell-env resolution
+
+getResolvedShellEnv() (shellEnv.ts) checks args['force-disable-user-env']
+to skip spawning a real shell entirely -- but PtyHostService's own
+_resolveShellEnv() was passing a hardcoded `{ _: [] }` instead of the
+real parsed argv, so the flag could never reach it regardless of what was
+passed on the command line. NodeAgentHostStarter's own _resolveShellEnv
+already does this correctly (passes this._environmentService.args).
+
+Confirmed as a real, reproducing gap via a captured node-stdio.log
+("ptyHost was unable to resolve shell environment ... spawn sh ENOENT")
+even with --force-disable-user-env already passed on the command line --
+not guessed. iOS denies spawning `sh` at all (same sandbox wall as
+fork()), so this resolveShellEnv attempt was always doomed here
+regardless of the flag; on a real Unix host it's merely a wasted shell
+spawn on every ptyHost start, since --force-disable-user-env exists
+specifically to skip it.
+
+No DI changes: PtyHostService has no environment service injected, and
+adding one purely for this one flag would widen the blast radius of
+every other PtyHostService construction site. process.argv is the same
+source of truth NativeParsedArgs itself is built from.
+
+Index: code-server/lib/vscode/src/vs/platform/terminal/node/ptyHostService.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/platform/terminal/node/ptyHostService.ts	2026-09-24 06:43:28.859758134 +0000
++++ code-server/lib/vscode/src/vs/platform/terminal/node/ptyHostService.ts	2026-09-24 06:43:43.425645555 +0000
+@@ -132,7 +132,27 @@
+ 		}
+ 
+ 		try {
+-			return await getResolvedShellEnv(this._configurationService, this._logService, { _: [] }, process.env);
++			// getResolvedShellEnv() itself checks args['force-disable-user-env']
++			// to skip spawning a real shell entirely -- but this call site was
++			// passing a hardcoded `{ _: [] }` instead of the real parsed argv,
++			// so the flag could never reach it regardless of what was passed on
++			// the command line, unlike NodeAgentHostStarter's own
++			// _resolveShellEnv (which correctly passes
++			// this._environmentService.args). Confirmed as a real, reproducing
++			// gap via a captured node-stdio.log ("ptyHost was unable to resolve
++			// shell environment ... spawn sh ENOENT") even with
++			// --force-disable-user-env already passed -- not guessed. iOS denies
++			// spawning `sh` at all (same sandbox wall as fork()), so this
++			// resolveShellEnv attempt was always doomed here regardless of the
++			// flag; on a real Unix host it's merely a wasted shell spawn since
++			// --force-disable-user-env is meant to skip exactly this. No DI
++			// changes needed (PtyHostService has no environment service
++			// injected, and adding one purely for this would widen the blast
++			// radius of every other PtyHostService construction site) --
++			// process.argv is the same source of truth NativeParsedArgs itself
++			// is built from.
++			const args = { _: [], 'force-disable-user-env': process.argv.includes('--force-disable-user-env') };
++			return await getResolvedShellEnv(this._configurationService, this._logService, args, process.env);
+ 		} catch (error) {
+ 			this._logService.error('ptyHost was unable to resolve shell environment', error);
+ 
