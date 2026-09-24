@@ -1,0 +1,84 @@
+Give the extension host Worker its own memory budget instead of inheriting the main thread's --max-old-space-size.
+
+NodeRuntimeController.swift starts the main process with
+--max-old-space-size=256 (a deliberate, mobile-conscious budget for the
+main thread's own footprint). extensionHostConnection.ts's iOS
+worker_threads branch (ios-exthost-no-fork.diff) builds its Worker's own
+execArgv/resourceLimits from `opts.execArgv`, which is just
+`process.execArgv` (the main process's own flags) minus --inspect --
+meaning that same 256MB ceiling was being silently re-applied to the
+extension host's own, separate V8 isolate, not just stripped like the
+jitless/wasm flags already are.
+
+Confirmed as a real, deterministic bug via a captured node-stdio.log, not
+guessed: the extension host Worker OOMs and gets torn down and restarted
+roughly 15-20 seconds after every single launch --
+
+  Error [ERR_WORKER_OUT_OF_MEMORY]: Worker terminated due to reaching
+  memory limit: JS heap out of memory
+
+-- reproducing identically in both the pre- and post-UI-test app launches
+of the same simulator-test.yml run. 256MB is far too little for vscode's
+extension host, which ordinarily runs unconstrained (a real forked OS
+process inheriting the platform's own multi-GB V8 default) on desktop.
+This is not a real device memory-pressure issue either -- it reproduces
+in the Simulator, which has ample host RAM available -- purely a
+self-imposed V8 old-space ceiling, unrelated to iOS's actual jetsam
+memory limit (a separate, much higher ceiling this change doesn't touch).
+A reconnect-and-relaunch cycle already built into vscode's own
+client/server protocol silently recovers (a second Worker takes over),
+which is why this had gone unnoticed: the UI still renders correctly a
+few seconds later, no visible crash, just a slower, wasteful cold start
+on every single boot.
+
+Fix: give the extension host Worker its own explicit resourceLimits
+(512MB), independent of whatever --max-old-space-size the main thread
+happens to be running with.
+
+Index: code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/server/node/extensionHostConnection.ts	2026-09-24 07:40:15.108117997 +0000
++++ code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts	2026-09-24 07:40:27.917847928 +0000
+@@ -347,15 +347,37 @@
+ 				// dropped here rather than translated.
+ 				const disallowedExecArgvPrefixes = ['--max-old-space-size', '--jitless', '--no-jitless', '--expose-wasm', '--no-expose-wasm'];
+ 				const workerExecArgv = (opts.execArgv ?? []).filter(a => !disallowedExecArgvPrefixes.some(p => a.startsWith(p)));
+-				const maxOldSpaceSizeArg = (opts.execArgv ?? []).find(a => a.startsWith('--max-old-space-size'));
+-				const maxOldGenerationSizeMb = maxOldSpaceSizeArg
+-					? Number(maxOldSpaceSizeArg.split('=')[1])
+-					: undefined;
++				// Do NOT translate the *main* process's own --max-old-space-size
++				// into this Worker's resourceLimits: that flag (256, set by
++				// NodeRuntimeController.swift) was chosen for the main
++				// thread's own footprint, not the extension host's -- but
++				// since it lives in `process.execArgv`, which `opts.execArgv`
++				// above is built from, `maxOldSpaceSizeArg` would find and
++				// reapply that same 256MB ceiling to the *extension host's*
++				// own separate V8 isolate too. Confirmed as a real,
++				// deterministic crash via captured node-stdio.log on every
++				// single boot (both the pre- and post-UI-test app launches
++				// in the same simulator-test.yml run): the extension host
++				// Worker OOMs and gets restarted 15-20s after every launch
++				// (`ERR_WORKER_OUT_OF_MEMORY: Worker terminated due to
++				// reaching memory limit: JS heap out of memory`) -- 256MB is
++				// far too little for vscode's extension host, which
++				// ordinarily runs unconstrained (a real forked OS process
++				// inheriting the platform's own multi-GB V8 default) on
++				// desktop. This isn't a real-device memory-pressure issue
++				// either: it reproduces identically in the Simulator, which
++				// has ample host RAM available -- purely a self-imposed V8
++				// old-space ceiling, unrelated to iOS's actual jetsam
++				// memory limit (a separate, much higher ceiling this change
++				// doesn't touch). Give the extension host its own,
++				// independent heap budget instead of inheriting the main
++				// thread's.
++				const extHostMaxOldGenerationSizeMb = 512;
+ 				const worker = new Worker(FileAccess.asFileUri('bootstrap-fork').fsPath, {
+ 					argv: args,
+ 					env,
+ 					execArgv: workerExecArgv,
+-					resourceLimits: maxOldGenerationSizeMb ? { maxOldGenerationSizeMb } : undefined,
++					resourceLimits: { maxOldGenerationSizeMb: extHostMaxOldGenerationSizeMb },
+ 					stdout: true,
+ 					stderr: true,
+ 				});
