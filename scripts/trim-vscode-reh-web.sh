@@ -156,6 +156,36 @@ node -e "
       console.log('patched @vscode/deviceid platform check in ' + full);
     }
   }
+  // @vscode/deviceid's own package.json depends on 'uuid: ^14.0.0' (confirmed
+  // by reading vscode's real package-lock.json at the pinned commit --
+  // node_modules/@vscode/deviceid/node_modules/uuid resolves to 14.0.0, a
+  // separate, nested copy from the top-level hoisted uuid@3.4.0 everything
+  // else uses), but its own compiled devdeviceid.js still does a plain
+  // CommonJS 'const uuid_1 = require(\"uuid\");' at module load time --
+  // uuid 14.x's package.json declares \"type\": \"module\" with no CJS
+  // entry point at all, so that require() throws ERR_REQUIRE_ESM the moment
+  // getDeviceId() is ever actually called (confirmed via a real captured
+  // node-stdio.log, not guessed: 'Instead change the require of index.js in
+  // .../deviceid/dist/devdeviceid.js to a dynamic import()'). This is a
+  // genuine upstream bug in this exact @vscode/deviceid/uuid version pairing
+  // at the pinned vscode commit -- not iOS-specific at all, would break the
+  // same way on any platform reaching this code path -- so it's fixed here
+  // the same way the crypto-global shim above handles the same
+  // require-an-ESM-module-from-CJS problem: move the import to a dynamic
+  // import() inside the (already async) function that uses it.
+  function patchDevDeviceIdFile(full) {
+    let text = fs.readFileSync(full, 'utf8');
+    const before = text;
+    text = text.replace('const uuid_1 = require(\"uuid\");\n', '');
+    text = text.replace(
+      'const newDeviceId = (0, uuid_1.v4)()',
+      'const uuid_1 = await import(\"uuid\");\n        const newDeviceId = (0, uuid_1.v4)()'
+    );
+    if (text !== before) {
+      fs.writeFileSync(full, text);
+      console.log('patched @vscode/deviceid require(\"uuid\") ESM incompatibility in ' + full);
+    }
+  }
   function walk(dir) {
     for (const name of fs.readdirSync(dir)) {
       const full = path.join(dir, name);
@@ -163,6 +193,8 @@ node -e "
       if (stat.isDirectory()) walk(full);
       else if (stat.isFile() && (full.endsWith('deviceid/dist/index.js') || full.endsWith('deviceid/dist/storage.js'))) {
         patchDeviceIdFile(full);
+      } else if (stat.isFile() && full.endsWith('deviceid/dist/devdeviceid.js')) {
+        patchDevDeviceIdFile(full);
       }
     }
   }
