@@ -28,10 +28,22 @@ the agent host at all, so this is verified only by a real tsc compile
 series), not by observed behavior. See CLAUDE.md/README before assuming
 this actually works, not just compiles.
 
+UPDATE: WorkerClient's own resourceLimits had the exact same bug already
+found and fixed for the extension host's own Worker in
+extensionHostConnection.ts (ios-exthost-worker-heap.diff) -- it derived
+maxOldGenerationSizeMb from inheritedExecArgv, which is just
+process.execArgv (the main thread's own --max-old-space-size=256, set for
+the main thread's footprint, not this Worker's). Not yet directly observed
+crashing this way (still no CI test exercises the agent host), but there's
+no reason its own V8 isolate would need less headroom than the extension
+host's did -- given its own explicit 2048MB budget instead, matching the
+extension host's settled value, rather than waiting to separately
+rediscover the same bug by hitting the crash.
+
 Index: code-server/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts
 ===================================================================
---- code-server.orig/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts	2026-09-24 06:38:21.554644172 +0000
-+++ code-server/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts	2026-09-24 07:02:43.185713306 +0000
+--- code-server.orig/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts
++++ code-server/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts
 @@ -12,6 +12,7 @@
  import { Emitter, Event } from '../../../common/event.js';
  import { dispose, IDisposable, toDisposable } from '../../../common/lifecycle.js';
@@ -40,7 +52,7 @@ Index: code-server/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts
  import { createQueuedSender } from '../../../node/processes.js';
  import { removeDangerousEnvVariables } from '../../../common/processes.js';
  import { ChannelClient as IPCClient, ChannelServer as IPCServer, IChannel, IChannelClient } from '../common/ipc.js';
-@@ -283,3 +284,279 @@
+@@ -283,3 +284,293 @@
  		this.activeRequests.clear();
  	}
  }
@@ -210,14 +222,28 @@ Index: code-server/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts
 +				.filter(a => !a.startsWith('--vscode-'))
 +				.filter(a => !disallowedWorkerExecArgvPrefixes.some(p => a.startsWith(p)));
 +
-+			const maxOldSpaceSizeArg = inheritedExecArgv.find(a => a.startsWith('--max-old-space-size'));
-+			const maxOldGenerationSizeMb = maxOldSpaceSizeArg ? Number(maxOldSpaceSizeArg.split('=')[1]) : undefined;
++			// Do NOT translate the *main* process's own --max-old-space-size
++			// (256, set by NodeRuntimeController.swift for the main thread's
++			// own footprint) into this Worker's resourceLimits -- the exact
++			// same bug already found and fixed for the extension host's own
++			// Worker in extensionHostConnection.ts (see
++			// ios-exthost-worker-heap.diff): inheritedExecArgv here is
++			// process.execArgv, so naively deriving maxOldGenerationSizeMb
++			// from it would silently reapply that same too-small ceiling to
++			// whatever uses this WorkerClient (the agent host, currently).
++			// Not yet directly observed crashing this way (no CI test
++			// exercises the agent host's actual chat/agent functionality),
++			// but there's no reason to believe its own V8 isolate needs any
++			// less headroom than the extension host's did -- give it the
++			// same settled 2048MB budget rather than waiting to rediscover
++			// this by hitting the crash separately.
++			const workerMaxOldGenerationSizeMb = 2048;
 +
 +			this.worker = new Worker(this.modulePath, {
 +				argv: args,
 +				env,
 +				execArgv,
-+				resourceLimits: maxOldGenerationSizeMb ? { maxOldGenerationSizeMb } : undefined,
++				resourceLimits: { maxOldGenerationSizeMb: workerMaxOldGenerationSizeMb },
 +				stdout: true,
 +				stderr: true,
 +			});

@@ -22,11 +22,26 @@ path. Meant to be removed (or converted into a real fix) once a captured
 log shows what's actually consuming memory during the one-time
 cold-launch path this crash is confined to.
 
+First attempt at this patch failed vscode-reh-web-build.yml's own
+tsgo-typecheck for real (run 36025966651):
+
+  src/bootstrap-fork.ts(281,11): error TS2339: Property 'unref' does not
+  exist on type 'TimeoutHandle'.
+
+Root cause: this tsconfig includes both Node and DOM lib types, and a
+bare `setInterval(...)` call resolves to the DOM lib's overload (which
+returns a plain numeric handle with no `.unref()`/`.ref()`), not Node's
+`NodeJS.Timeout`. Fixed by importing Node's own `setInterval` explicitly
+from `node:timers` instead of relying on ambient global overload
+resolution -- matching how this same file already prefers explicit
+`node:*` imports (`node:buffer`, `node:crypto`) over bare globals for
+exactly this kind of ambiguity.
+
 Index: code-server/lib/vscode/src/bootstrap-fork.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/bootstrap-fork.ts
 +++ code-server/lib/vscode/src/bootstrap-fork.ts
-@@ -258,6 +258,29 @@
+@@ -258,6 +258,35 @@
  	(globalThis as any).crypto = (await import('node:crypto')).webcrypto;
  }
 
@@ -46,7 +61,13 @@ Index: code-server/lib/vscode/src/bootstrap-fork.ts
 +// problem.
 +if (process.env['VSCODE_ESM_ENTRYPOINT'] === 'vs/workbench/api/node/extensionHostProcess') {
 +	const v8 = await import('node:v8');
-+	setInterval(() => {
++	// Bare `setInterval` resolves to the DOM lib's overload in this
++	// tsconfig (returning a plain number/TimeoutHandle with no .unref()),
++	// not Node's -- import Node's own timer functions explicitly instead
++	// of relying on ambient overload resolution, matching how this file
++	// already prefers explicit `node:*` imports over bare globals.
++	const { setInterval: nodeSetInterval } = await import('node:timers');
++	nodeSetInterval(() => {
 +		const mem = process.memoryUsage();
 +		const heap = v8.getHeapStatistics();
 +		process.stderr.write(`[iOS-DIAG heap] rss=${(mem.rss / 1048576).toFixed(1)}MB heapUsed=${(mem.heapUsed / 1048576).toFixed(1)}MB heapTotal=${(mem.heapTotal / 1048576).toFixed(1)}MB external=${(mem.external / 1048576).toFixed(1)}MB v8UsedHeap=${(heap.used_heap_size / 1048576).toFixed(1)}MB v8TotalHeap=${(heap.total_heap_size / 1048576).toFixed(1)}MB v8HeapLimit=${(heap.heap_size_limit / 1048576).toFixed(1)}MB\n`);
