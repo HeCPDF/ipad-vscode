@@ -24,8 +24,8 @@ investigating again.
 ## Where things actually stand — CHECK THIS FIRST
 
 Confirmed this session (2026-09-24), each checked directly rather than trusted from a
-green checkmark. This session found and fixed three real, previously-undiscovered bugs
-via the full `vscode-reh-web-build.yml` → `build.yml` → `simulator-test.yml` loop,
+green checkmark. This session found and fixed several real, previously-undiscovered
+bugs via the full `vscode-reh-web-build.yml` → `build.yml` → `simulator-test.yml` loop,
 downloading and actually reading the `simulator-test-results` artifact each time:
 
 1. **Agent-host `spawn EPERM` fix (`ios-agenthost-no-fork.diff`, already written by a
@@ -62,9 +62,21 @@ downloading and actually reading the `simulator-test-results` artifact each time
    above) — the underlying fix predates this session (root-caused 2026-09-07); this
    session only fixed its compile error and confirmed the fixed version still applies
    and compiles cleanly across the whole 31-patch series.
+4. **`@vscode/deviceid`'s `require("uuid")` ESM incompatibility — a real,
+   non-iOS-specific upstream bug**, found in the same log-reading pass as item 2.
+   `@vscode/deviceid@0.1.5` (the version actually locked in vscode's own
+   `package-lock.json` at the pinned commit — not `0.1.1`, an earlier session's stale
+   assumption) depends on `uuid@^14.0.0`, which is ESM-only, but its own compiled
+   `devdeviceid.js` still does a plain CommonJS `require("uuid")` — broken on any
+   platform the moment `getDeviceId()` is called, not iOS-specific. Fixed in
+   `scripts/trim-vscode-reh-web.sh` (commit `f95031c`, same pattern as the existing
+   crypto-global shim there: moved the import into a dynamic `await import("uuid")`
+   inside the already-`async` function). Verified functionally (ran the patched file
+   against a real local `uuid@14.0.0` install) and via CI (`ERR_REQUIRE_ESM` is gone
+   from both pre- and post-UI-test logs in verification run `35984721126`).
 
 **Next session's first move**: there is no pending/unverified build right now (HEAD is
-`1b967f1`, `vscode-reh-web-build.yml`/`build.yml`/`simulator-test.yml` all green on it).
+`f95031c`, `vscode-reh-web-build.yml`/`build.yml`/`simulator-test.yml` all green on it).
 Pick a next concrete task from README's "Not done yet" list. In rough order of
 CI-actionability (things that don't require a physical iPad or a Mac dev environment):
 1. **The first-launch-only extension host OOM** (see item 2 above) — real root cause
