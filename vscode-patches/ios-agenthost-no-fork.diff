@@ -31,8 +31,16 @@ this actually works, not just compiles.
 Index: code-server/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts	2026-09-24 06:38:21.554644172 +0000
-+++ code-server/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts	2026-09-24 06:38:55.049628413 +0000
-@@ -283,3 +283,264 @@
++++ code-server/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts	2026-09-24 07:02:43.185713306 +0000
+@@ -12,6 +12,7 @@
+ import { Emitter, Event } from '../../../common/event.js';
+ import { dispose, IDisposable, toDisposable } from '../../../common/lifecycle.js';
+ import { deepClone } from '../../../common/objects.js';
++import { IProcessEnvironment } from '../../../common/platform.js';
+ import { createQueuedSender } from '../../../node/processes.js';
+ import { removeDangerousEnvVariables } from '../../../common/processes.js';
+ import { ChannelClient as IPCClient, ChannelServer as IPCServer, IChannel, IChannelClient } from '../common/ipc.js';
+@@ -283,3 +284,279 @@
  		this.activeRequests.clear();
  	}
  }
@@ -175,11 +183,26 @@ Index: code-server/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts
 +		if (!this._client) {
 +			const args = this.options.args || [];
 +
-+			let env: Record<string, unknown> = { ...deepClone(process.env), 'VSCODE_PARENT_PID': String(process.pid) };
++			const rawEnv: IProcessEnvironment = { ...deepClone(process.env), 'VSCODE_PARENT_PID': String(process.pid) };
 +			if (this.options.env) {
-+				env = { ...env, ...this.options.env };
++				Object.assign(rawEnv, this.options.env);
 +			}
-+			removeDangerousEnvVariables(env);
++			removeDangerousEnvVariables(rawEnv);
++
++			// Unlike child_process.fork()'s ForkOptions.env (NodeJS.ProcessEnv,
++			// string | undefined values allowed), worker_threads.Worker's own
++			// env option requires every value to be a plain string -- drop any
++			// keys left undefined (e.g. a process.env entry that was never
++			// actually set) rather than passing them through and letting the
++			// type checker (or worker_threads itself, if it doesn't validate
++			// this at all) deal with it.
++			const env: Record<string, string> = {};
++			for (const key in rawEnv) {
++				const value = rawEnv[key];
++				if (value !== undefined) {
++					env[key] = value;
++				}
++			}
 +
 +			const inheritedExecArgv = this.options.freshExecArgv ? [] : process.execArgv;
 +			const execArgv = inheritedExecArgv
@@ -297,6 +320,7 @@ Index: code-server/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts
 +}
 +
 +//#endregion
+
 Index: code-server/lib/vscode/src/vs/platform/agentHost/node/nodeAgentHostStarter.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/platform/agentHost/node/nodeAgentHostStarter.ts	2026-09-24 06:38:21.556541425 +0000
