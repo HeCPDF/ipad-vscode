@@ -1,0 +1,360 @@
+Route the agent host around fork() on iOS -- in-process, via worker_threads, not a second OS-launched process.
+
+iOS denies fork()/posix_spawn() to third-party processes outright, at the
+sandbox-profile level -- unrelated to JIT or code signing, the same wall
+ios-exthost-no-fork.diff already routes the extension host around. This is
+a separate bug: vscode's built-in AI chat/agent host (the "Build with
+Agent" panel) is a genuinely different subsystem from the extension host,
+launched by NodeAgentHostStarter via ipc.cp.ts's Client, which does an
+unconditional real child_process.fork() and talks process.send/'message' --
+a protocol worker_threads.Worker cannot speak at all (no process.send
+equivalent, only parentPort.postMessage), unlike the extension host's own
+protocol (a plain OS socket, agnostic to how the two ends were launched).
+Confirmed as a real, reproducing crash via a captured node-stdio.log
+("ServerAgentHostManager: agent host failed to start Error: spawn EPERM",
+repeated until the restart budget is spent), not guessed.
+
+Adds WorkerClient/WorkerServer to ipc.cp.ts (pure additions -- the file
+watcher and pty host, which also import Client/Server from this file and
+are already broken here for unrelated reasons, are unaffected), and wires
+them into both ends -- NodeAgentHostStarter (main-thread side) and
+agentHostMain.ts (worker-thread side) -- gated the same way the extension
+host already is: IPADVSCODE_NO_FORK on the launch side, !isMainThread on
+the launched side.
+
+Not yet behaviorally verified end to end on device: no CI test exercises
+the agent host at all, so this is verified only by a real tsc compile
+(vscode-reh-web-build.yml's own gulp task does one over every patch in the
+series), not by observed behavior. See CLAUDE.md/README before assuming
+this actually works, not just compiles.
+
+Index: code-server/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts	2026-09-24 06:38:21.554644172 +0000
++++ code-server/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts	2026-09-24 06:38:55.049628413 +0000
+@@ -283,3 +283,264 @@
+ 		this.activeRequests.clear();
+ 	}
+ }
++
++//#region iOS: worker_threads-based Client/Server
++
++// iOS denies fork()/posix_spawn() to third-party processes outright (the
++// same wall ios-exthost-no-fork.diff already routes the extension host
++// around). Unlike the extension host's own wire protocol -- a plain OS
++// socket, agnostic to how the two ends were launched -- Client/Server
++// above talk over child_process's own IPC channel (process.send/the
++// 'message' event on the ChildProcess object), which has no
++// worker_threads equivalent at all. So the agent host (vscode's built-in
++// AI chat/agent host, launched by NodeAgentHostStarter via this file's
++// Client) needs a genuinely different transport on both ends, not just a
++// different launch call -- confirmed as a real, reproducing crash via a
++// captured node-stdio.log ("ServerAgentHostManager: agent host failed to
++// start Error: spawn EPERM", repeated until the restart budget is spent),
++// not guessed.
++//
++// worker_threads' Worker (main-thread side) / parentPort (worker-thread
++// side) postMessage/'message' API is structurally close enough to
++// child_process's send/'message' that adapting Client/Server above is
++// mechanical: swap fork() for `new Worker()`, and
++// process.send/process.on('message') for
++// parentPort.postMessage/parentPort.on('message'). WorkerClient/
++// WorkerServer below are ADDED exports, not modifications to Client/
++// Server above -- nothing else importing this file (the file watcher, the
++// pty host, both already broken here for unrelated reasons) is affected.
++//
++// Not yet behaviorally verified end to end on device: no CI test
++// exercises the agent host at all, so this is verified only by a real
++// tsc compile (vscode-reh-web-build.yml's own gulp task does one over
++// every patch in the series) -- see CLAUDE.md/README before assuming
++// this actually works, not just compiles.
++
++import { Worker, parentPort, isMainThread } from 'worker_threads';
++
++// Same disallowed-flag list ios-exthost-no-fork.diff already established
++// for the extension host's own Worker: worker_threads only accepts a
++// curated subset of V8/Node CLI flags via execArgv (unlike a real forked
++// child, which accepts any flag) -- confirmed there via a captured
++// node-stdio.log ("ERR_WORKER_INVALID_EXEC_ARGV"), reused here rather
++// than re-discovering the same failure independently for the agent host.
++const disallowedWorkerExecArgvPrefixes = ['--max-old-space-size', '--jitless', '--no-jitless', '--expose-wasm', '--no-expose-wasm'];
++
++export class WorkerClient implements IChannelClient, IDisposable {
++
++	private disposeDelayer: Delayer<void> | undefined;
++	private activeRequests = new Set<IDisposable>();
++	private worker: Worker | null;
++	private _client: IPCClient | null;
++	private channels = new Map<string, IChannel>();
++
++	private readonly _onDidProcessExit = new Emitter<{ code: number; signal: string }>();
++	readonly onDidProcessExit = this._onDidProcessExit.event;
++
++	constructor(private modulePath: string, private options: IIPCOptions) {
++		const timeout = options.timeout || 60000;
++		this.disposeDelayer = new Delayer<void>(timeout);
++		this.worker = null;
++		this._client = null;
++	}
++
++	getChannel<T extends IChannel>(channelName: string): T {
++		const that = this;
++
++		// eslint-disable-next-line local/code-no-dangerous-type-assertions
++		return {
++			call<T>(command: string, arg?: any, cancellationToken?: CancellationToken): Promise<T> {
++				return that.requestPromise<T>(channelName, command, arg, cancellationToken);
++			},
++			listen(event: string, arg?: any) {
++				return that.requestEvent(channelName, event, arg);
++			}
++		} as T;
++	}
++
++	protected requestPromise<T>(channelName: string, name: string, arg?: any, cancellationToken = CancellationToken.None): Promise<T> {
++		if (!this.disposeDelayer) {
++			return Promise.reject(new Error('disposed'));
++		}
++
++		if (cancellationToken.isCancellationRequested) {
++			return Promise.reject(errors.canceled());
++		}
++
++		this.disposeDelayer.cancel();
++
++		const channel = this.getCachedChannel(channelName);
++		const result = createCancelablePromise(token => channel.call<T>(name, arg, token));
++		const cancellationTokenListener = cancellationToken.onCancellationRequested(() => result.cancel());
++
++		const disposable = toDisposable(() => result.cancel());
++		this.activeRequests.add(disposable);
++
++		const cleanup = () => {
++			cancellationTokenListener.dispose();
++			this.activeRequests.delete(disposable);
++
++			if (this.activeRequests.size === 0 && this.disposeDelayer) {
++				this.disposeDelayer.trigger(() => this.disposeClient());
++			}
++		};
++		result.then(cleanup, cleanup);
++
++		return result;
++	}
++
++	protected requestEvent<T>(channelName: string, name: string, arg?: any): Event<T> {
++		if (!this.disposeDelayer) {
++			return Event.None;
++		}
++
++		this.disposeDelayer.cancel();
++
++		let listener: IDisposable;
++		const emitter = new Emitter<any>({
++			onWillAddFirstListener: () => {
++				const channel = this.getCachedChannel(channelName);
++				const event: Event<T> = channel.listen(name, arg);
++
++				listener = event(emitter.fire, emitter);
++				this.activeRequests.add(listener);
++			},
++			onDidRemoveLastListener: () => {
++				this.activeRequests.delete(listener);
++				listener.dispose();
++
++				if (this.activeRequests.size === 0 && this.disposeDelayer) {
++					this.disposeDelayer.trigger(() => this.disposeClient());
++				}
++			}
++		});
++
++		return emitter.event;
++	}
++
++	private get client(): IPCClient {
++		if (!this._client) {
++			const args = this.options.args || [];
++
++			let env: Record<string, unknown> = { ...deepClone(process.env), 'VSCODE_PARENT_PID': String(process.pid) };
++			if (this.options.env) {
++				env = { ...env, ...this.options.env };
++			}
++			removeDangerousEnvVariables(env);
++
++			const inheritedExecArgv = this.options.freshExecArgv ? [] : process.execArgv;
++			const execArgv = inheritedExecArgv
++				.filter(a => !/^--inspect(-brk)?=/.test(a))
++				.filter(a => !a.startsWith('--vscode-'))
++				.filter(a => !disallowedWorkerExecArgvPrefixes.some(p => a.startsWith(p)));
++
++			const maxOldSpaceSizeArg = inheritedExecArgv.find(a => a.startsWith('--max-old-space-size'));
++			const maxOldGenerationSizeMb = maxOldSpaceSizeArg ? Number(maxOldSpaceSizeArg.split('=')[1]) : undefined;
++
++			this.worker = new Worker(this.modulePath, {
++				argv: args,
++				env,
++				execArgv,
++				resourceLimits: maxOldGenerationSizeMb ? { maxOldGenerationSizeMb } : undefined,
++				stdout: true,
++				stderr: true,
++			});
++
++			const onMessageEmitter = new Emitter<VSBuffer>();
++			const onRawMessage = Event.fromNodeEventEmitter(this.worker, 'message', msg => msg);
++
++			const rawMessageDisposable = onRawMessage(msg => {
++
++				// Handle remote console logs specially
++				if (isRemoteConsoleLog(msg)) {
++					log(msg, `IPC Library: ${this.options.serverName}`);
++					return;
++				}
++
++				// Anything else goes to the outside
++				onMessageEmitter.fire(VSBuffer.wrap(Buffer.from(msg, 'base64')));
++			});
++
++			const send = (r: VSBuffer) => {
++				try { this.worker?.postMessage((<Buffer>r.buffer).toString('base64')); } catch (e) { /* worker gone */ }
++			};
++			const onMessage = onMessageEmitter.event;
++			const protocol = { send, onMessage };
++
++			this._client = new IPCClient(protocol);
++
++			this.worker.on('error', err => console.warn('IPC "' + this.options.serverName + '" (worker) errored with ' + err));
++
++			this.worker.on('exit', (code: number) => {
++				rawMessageDisposable.dispose();
++
++				this.activeRequests.forEach(r => dispose(r));
++				this.activeRequests.clear();
++
++				if (code !== 0) {
++					console.warn('IPC "' + this.options.serverName + '" (worker) exited with code ' + code);
++				}
++
++				this.disposeDelayer?.cancel();
++				this.disposeClient();
++				this._onDidProcessExit.fire({ code, signal: '' });
++			});
++		}
++
++		return this._client;
++	}
++
++	private getCachedChannel(name: string): IChannel {
++		let channel = this.channels.get(name);
++
++		if (!channel) {
++			channel = this.client.getChannel(name);
++			this.channels.set(name, channel);
++		}
++
++		return channel;
++	}
++
++	private disposeClient() {
++		if (this._client) {
++			if (this.worker) {
++				this.worker.terminate();
++				this.worker = null;
++			}
++			this._client = null;
++			this.channels.clear();
++		}
++	}
++
++	dispose() {
++		this._onDidProcessExit.dispose();
++		this.disposeDelayer?.cancel();
++		this.disposeDelayer = undefined;
++		this.disposeClient();
++		this.activeRequests.clear();
++	}
++}
++
++/**
++ * Server-side counterpart to {@link WorkerClient}, for use inside the
++ * worker_threads.Worker itself. Mirrors {@link Server} above, which
++ * assumes a real forked child's process.send/'message'.
++ */
++export class WorkerServer<TContext extends string> extends IPCServer<TContext> {
++	constructor(ctx: TContext) {
++		if (isMainThread || !parentPort) {
++			throw new Error('WorkerServer can only be constructed inside a worker_threads.Worker');
++		}
++		const port = parentPort;
++		super({
++			send: r => {
++				try {
++					port.postMessage((<Buffer>r.buffer).toString('base64'));
++				} catch (e) { /* not much to do */ }
++			},
++			onMessage: Event.fromNodeEventEmitter<VSBuffer>(port, 'message', msg => VSBuffer.wrap(Buffer.from(msg, 'base64')))
++		}, ctx);
++	}
++}
++
++//#endregion
+Index: code-server/lib/vscode/src/vs/platform/agentHost/node/nodeAgentHostStarter.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/platform/agentHost/node/nodeAgentHostStarter.ts	2026-09-24 06:38:21.556541425 +0000
++++ code-server/lib/vscode/src/vs/platform/agentHost/node/nodeAgentHostStarter.ts	2026-09-24 06:39:21.825630005 +0000
+@@ -7,7 +7,7 @@
+ import { Disposable, DisposableStore } from '../../../base/common/lifecycle.js';
+ import { FileAccess, Schemas } from '../../../base/common/network.js';
+ import { ProxyChannel } from '../../../base/parts/ipc/common/ipc.js';
+-import { Client, IIPCOptions } from '../../../base/parts/ipc/node/ipc.cp.js';
++import { Client, IIPCOptions, WorkerClient } from '../../../base/parts/ipc/node/ipc.cp.js';
+ import { AiAgentEnvValue, AiAgentEnvVar } from '../../chat/common/aiAgentEnv.js';
+ import { IConfigurationService } from '../../configuration/common/configuration.js';
+ import { IEnvironmentService, INativeEnvironmentService } from '../../environment/common/environment.js';
+@@ -153,7 +153,15 @@
+ 
+ 		await this._removeStaleSocket();
+ 
+-		const client = new Client(FileAccess.asFileUri('bootstrap-fork').fsPath, opts);
++		// iOS denies fork()/posix_spawn() outright -- same wall
++		// ios-exthost-no-fork.diff already routes the extension host
++		// around, via the same env var NodeRuntimeController.swift sets
++		// before node_start(). See ipc.cp.ts's WorkerClient/WorkerServer
++		// for why the agent host needs its own worker_threads-based
++		// transport rather than reusing the extension host's.
++		const client = process.env['IPADVSCODE_NO_FORK']
++			? new WorkerClient(FileAccess.asFileUri('bootstrap-fork').fsPath, opts)
++			: new Client(FileAccess.asFileUri('bootstrap-fork').fsPath, opts);
+ 		const store = new DisposableStore();
+ 		store.add(client);
+ 
+Index: code-server/lib/vscode/src/vs/platform/agentHost/node/agentHostMain.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/platform/agentHost/node/agentHostMain.ts	2026-09-24 06:38:21.558280268 +0000
++++ code-server/lib/vscode/src/vs/platform/agentHost/node/agentHostMain.ts	2026-09-24 06:39:59.053632218 +0000
+@@ -5,7 +5,8 @@
+ 
+ import { DeferredPromise } from '../../../base/common/async.js';
+ import { ProxyChannel } from '../../../base/parts/ipc/common/ipc.js';
+-import { Server as ChildProcessServer } from '../../../base/parts/ipc/node/ipc.cp.js';
++import { Server as ChildProcessServer, WorkerServer } from '../../../base/parts/ipc/node/ipc.cp.js';
++import { isMainThread } from 'worker_threads';
+ import { Server as UtilityProcessServer } from '../../../base/parts/ipc/node/ipc.mp.js';
+ import { isUtilityProcess } from '../../../base/parts/sandbox/node/electronTypes.js';
+ import { Emitter, type Event } from '../../../base/common/event.js';
+@@ -70,10 +71,14 @@
+ });
+ 
+ async function startAgentHost(): Promise<void> {
+-	// Setup RPC - supports both Electron utility process and Node child process
+-	let server: ChildProcessServer<string> | UtilityProcessServer;
++	// Setup RPC - supports Electron utility process, Node child process, and
++	// (iOS, which denies both of those to third-party processes -- see
++	// ipc.cp.ts's WorkerServer) a worker_threads.Worker.
++	let server: ChildProcessServer<string> | UtilityProcessServer | WorkerServer<string>;
+ 	if (isUtilityProcess(process)) {
+ 		server = new UtilityProcessServer();
++	} else if (!isMainThread) {
++		server = new WorkerServer(AgentHostIpcChannels.AgentHost);
+ 	} else {
+ 		server = new ChildProcessServer(AgentHostIpcChannels.AgentHost);
+ 	}

@@ -116,6 +116,16 @@ jobs:
           # the same reason.
           apply copilot
 
+          # Routes the agent host (vscode's built-in AI chat/agent host,
+          # a different subsystem from the extension host) around fork()
+          # the same way ios-exthost-no-fork.diff already does for the
+          # extension host -- but needs its own worker_threads-based
+          # transport on both ends, since ipc.cp.ts's Client/Server (which
+          # the agent host uses, unlike the extension host's own
+          # socket-based protocol) talk over child_process's IPC channel,
+          # which has no worker_threads equivalent at all.
+          apply ios-agenthost-no-fork
+
           rejects=$(find . -name "*.rej")
           if [ -n "$rejects" ]; then
             echo "::error::unresolved patch rejects:"
