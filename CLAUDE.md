@@ -127,6 +127,31 @@ doesn't burn time on them:
 - **No native process spawning**, so most debug adapters (anything that
   spawns a debuggee as a child process) won't work. Only in-process/pure-JS
   debug adapters will.
+- **Full-text search (Find in Files, Cmd+Shift+F) is very likely completely
+  broken, not just degraded — found 2026-09-24, not yet observed failing in
+  a real run, but structurally certain.** `ripgrepTextSearchEngine.ts`
+  (`src/vs/workbench/services/search/node/`) is vscode's *only* text-search
+  engine — there is no pure-JS fallback file alongside it — and it works
+  by `cp.spawn()`-ing a real, separately-compiled `rg` binary
+  (`ripgrepFileSearch.ts:22`). Unlike the extension host and agent host
+  (both fixable by swapping the *launch* mechanism to `worker_threads`,
+  since the thing being launched was Node/JS code all along), ripgrep is a
+  compiled Rust binary, not JavaScript — there is no worker_threads
+  equivalent for "run a different program," and cross-compiling ripgrep
+  for iOS-arm64 would not help either, since the sandbox denies spawning
+  *any* new process at all to third-party apps, regardless of the target
+  binary's platform or architecture. The only path that could work at all
+  mirrors what README's corrected terminal section already found for
+  Pyto/ios_system: embed ripgrep's actual search logic as a statically
+  linked native Node addon or a WASM build, called via a function call
+  instead of a subprocess — a materially large, unattempted project, not a
+  patch. Same root cause and same fix-shape as `agentHostWorkspaceFiles.ts`'s
+  own `cp.spawn(resolvedRgDiskPath, ...)` (the AI agent's separate
+  workspace-file-listing tool) and `agentHostGitService.ts`'s
+  `cp.execFile('git', ...)` calls (real `git` binary, same "external
+  compiled binary" problem, not `fork()`-of-Node-code) — all three are the
+  same class of gap, none of them fixable by the worker_threads trick that
+  already worked for the extension host and agent host's own IPC.
 - **JIT is disabled on real device** (`--jitless`), only enabled in
   Simulator — see README's "JIT: currently disabled" section for the real
   fix this would need (a V8 memory-allocator patch verifiable only on a
