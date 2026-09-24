@@ -70,6 +70,47 @@ symptom as before this patch (a few extra seconds of cold start, no
 visible crash), just now confined to first-run only instead of every
 single boot.
 
+UPDATE 4 (real root cause of the remaining cold-launch OOM, found):
+temporary heap-stats instrumentation added directly to bootstrap-fork.ts
+(logging `v8.getHeapStatistics()` every second, see the now-reverted
+ios-exthost-heap-diagnostic.diff for the full before/after) confirmed it
+via a real captured node-stdio.log (run 36031623694):
+
+  [iOS-DIAG heap] rss=433.5MB heapUsed=82.6MB heapTotal=116.1MB
+  external=3.7MB v8UsedHeap=82.6MB v8TotalHeap=116.1MB v8HeapLimit=304.0MB
+
+Despite `resourceLimits.maxOldGenerationSizeMb` being set to 2048 here,
+V8's own self-reported effective ceiling for this exact Worker was only
+~304MB -- explaining precisely why raising the requested value from 512
+to 1024 to 2048 produced zero further improvement for the cold-launch
+case (all three apparently get silently clamped to this same ~304MB
+platform ceiling; only the original, broken 256MB config was ever
+actually *smaller* than that ceiling and therefore the only value that
+was ever really being honored as requested). This is very likely a real
+nodejs-mobile platform limitation in how it wires (or fails to wire)
+worker_threads.Worker's resourceLimits through to the underlying V8
+isolate, not something fixable from vscode's own TypeScript source --
+same category as the already-documented no-real-pty and
+`-fno-exceptions`/gyp-cache limitations, which are also nodejs-mobile
+runtime/build issues, not vscode bugs.
+
+The log also shows a real, ~35-second gap with zero diagnostic output
+(event loop fully blocked) between the 82.6MB reading and the eventual
+crash -- something synchronous and heavy runs during that window on a
+cold launch specifically. It is NOT the main process's own "Started
+initializing default profile extensions" step (that already completed at
+17:07:17, a full 29 seconds before this exthost Worker was even launched
+at 17:07:46) -- the earlier "leading suspect" in UPDATE 3 above was wrong.
+The real cause of that 35-second blocking window (very likely first-time
+built-in extension activation/compilation, e.g. typescript-language-features
+loading the full TS compiler cold) is not yet identified. Given the real
+ceiling can't be raised past ~304MB from here, the only remaining lever
+is reducing what that one-time window allocates -- not another
+resourceLimits number. Left `extHostMaxOldGenerationSizeMb` at 2048
+anyway: harmless (silently clamped today) and would automatically pick up
+more headroom for free if a future nodejs-mobile version fixes the
+underlying clamping bug.
+
 Index: code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/server/node/extensionHostConnection.ts	2026-09-24 07:40:15.108117997 +0000

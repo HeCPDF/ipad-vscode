@@ -52,17 +52,49 @@ downloading and actually reading the `simulator-test-results` artifact each time
    trail). **Net result, confirmed via a `repeat=2` `simulator-test.yml` run
    (`35979036132`, 4 total app launches): every launch AFTER the very first one now
    starts the extension host cleanly with zero OOM, 0/2 in that run (previously 100%
-   crash-and-restart on every boot). The very first launch after a fresh install still
-   OOMs once and self-heals via vscode's own reconnect mechanism (same as before this
-   fix, just now confined to first-run only) — raising the heap ceiling further (tried
-   up to 2048MB) made zero measurable difference to that specific case, so it's very
-   likely not actually a sizing problem; see the patch file's "UPDATE 3" comment and
-   README's "Not done yet" for what's still open there.**
-3. `ServerAgentHostManager: agent host failed to start Error: spawn EPERM` (item 1
+   crash-and-restart on every boot).**
+3. **Root cause of the remaining first-launch-only OOM found (2026-09-24, later same
+   day): it's a real nodejs-mobile platform limitation, not a config/sizing problem.**
+   Added temporary heap-stats instrumentation directly to `bootstrap-fork.ts` (logging
+   `v8.getHeapStatistics()` every second inside the extension host Worker specifically;
+   see `ios-exthost-worker-heap.diff`'s own "UPDATE 4" comment for the full patch
+   history — three failed compile attempts along the way, each a real `tsc` error
+   caught by CI and fixed properly rather than guessed around, including discovering
+   this codebase's own deliberately-opaque `Timeout` type in
+   `src/typings/base-common.d.ts`). The captured log
+   (`simulator-test.yml` run `36031623694`) shows the smoking gun directly:
+   ```
+   [iOS-DIAG heap] ... v8UsedHeap=82.6MB v8TotalHeap=116.1MB v8HeapLimit=304.0MB
+   ```
+   Despite `resourceLimits.maxOldGenerationSizeMb` being requested at `2048`, V8's own
+   self-reported effective ceiling for that exact Worker was only **~304MB** —
+   explaining precisely why raising the requested value from 512→1024→2048 made zero
+   further difference to the cold-launch crash (all three get silently clamped to the
+   same ~304MB platform ceiling; only the *original* 256MB was ever small enough to
+   actually be the value in effect). This is very likely a bug in how this nodejs-mobile
+   build wires (or fails to wire) `worker_threads.Worker`'s `resourceLimits` through to
+   the underlying V8 isolate — a runtime/native-binding issue, not fixable from vscode's
+   own TypeScript source, same category as the already-documented no-real-pty and
+   `-fno-exceptions`/gyp-cache limitations. The log also shows a genuine ~35-second gap
+   with zero diagnostic output (event loop fully blocked) between an 82.6MB reading and
+   the eventual crash — something synchronous and heavy runs during that window on a
+   cold launch specifically, but it is **not** the main process's own "Started
+   initializing default profile extensions" step (that already completed 29 seconds
+   *before* this exthost Worker was even launched — the "leading suspect" from the
+   `854c06e`/`24c572e`/`1b967f1` commits' own comments was wrong, now corrected). The
+   real cause of that blocking window (leading guess: first-time built-in-extension
+   activation/compilation) is still open — see "Next session's first move" below. The
+   diagnostic instrumentation itself has been removed (`vscode-patches/
+   ios-exthost-heap-diagnostic.diff` reverted) now that it answered the question it was
+   added to answer; its findings live on in `ios-exthost-worker-heap.diff`'s own
+   comments. The same ~304MB clamping almost certainly also affects the agent host's
+   own `WorkerClient` (`ipc.cp.ts`), which requests the same 2048MB and hasn't been
+   separately verified — see `ios-agenthost-no-fork.diff`'s own "UPDATE 2" comment.
+4. `ServerAgentHostManager: agent host failed to start Error: spawn EPERM` (item 1
    above) — the underlying fix predates this session (root-caused 2026-09-07); this
    session only fixed its compile error and confirmed the fixed version still applies
    and compiles cleanly across the whole 31-patch series.
-4. **`@vscode/deviceid`'s `require("uuid")` ESM incompatibility — a real,
+5. **`@vscode/deviceid`'s `require("uuid")` ESM incompatibility — a real,
    non-iOS-specific upstream bug**, found in the same log-reading pass as item 2.
    `@vscode/deviceid@0.1.5` (the version actually locked in vscode's own
    `package-lock.json` at the pinned commit — not `0.1.1`, an earlier session's stale
@@ -76,23 +108,35 @@ downloading and actually reading the `simulator-test-results` artifact each time
    from both pre- and post-UI-test logs in verification run `35984721126`).
 
 **Next session's first move**: there is no pending/unverified build right now (HEAD is
-`f95031c`, `vscode-reh-web-build.yml`/`build.yml`/`simulator-test.yml` all green on it).
-Pick a next concrete task from README's "Not done yet" list. In rough order of
-CI-actionability (things that don't require a physical iPad or a Mac dev environment):
-1. **The first-launch-only extension host OOM** (see item 2 above) — real root cause
-   not yet found. Raising `maxOldGenerationSizeMb` (tried 512/1024/2048) only fixed the
-   warm-launch case; the cold-launch OOM reproduces at the same ~12-20s wall-clock
-   offset regardless of ceiling, which isn't consistent with a simple sizing problem.
-   Leading suspect (unconfirmed): first-run default-profile extension installation
-   (only ever logged on a fresh install). Next step: instrument that one-time path
-   directly (e.g. log `v8.getHeapStatistics()` periodically during first-run startup)
-   rather than guessing at another heap-size number.
-2. `experiment-sqlite3-ios.yml`'s stuck gyp-cache investigation (see README's "Not done
+the commit that reverted the diagnostic patch and documented the ~304MB finding —
+check `git log -1` for the exact SHA; `vscode-reh-web-build.yml`/`build.yml`/
+`simulator-test.yml` were all last confirmed green on the commit just before that
+doc-only one). Pick a next concrete task from README's "Not done yet" list. In rough
+order of CI-actionability (things that don't require a physical iPad or a Mac dev
+environment):
+1. **The first-launch-only extension host OOM's remaining ~35-second blocking window**
+   (see item 3 above) — the heap-ceiling half of this is now understood (a ~304MB
+   nodejs-mobile platform clamp on `worker_threads.Worker`'s `resourceLimits`, not
+   fixable from vscode's own source), but WHAT specifically runs synchronously for ~35
+   seconds on a cold launch and drives usage past that ~304MB ceiling is still unknown
+   (confirmed NOT the main process's "default profile extensions" step, which finishes
+   well before the exthost Worker even starts). Next step: re-add a scoped version of
+   the reverted heap-stats instrumentation (or add timestamps around specific
+   suspected culprits — likely candidates: `typescript-language-features`' TS compiler
+   cold-load, or another built-in extension's first activation) to find out what
+   actually runs during that silent window, rather than guessing. A real fix would
+   most likely mean deferring or lightening that one-time work, since the ~304MB
+   ceiling itself can't be raised from here.
+2. Separately, verify whether the agent host's own `WorkerClient` hits the same
+   ~304MB ceiling in practice (not yet directly observed, since no CI test exercises
+   the agent host's actual chat/agent functionality) — lower priority than item 1 since
+   it's not yet a confirmed problem, just a suspected one by analogy.
+3. `experiment-sqlite3-ios.yml`'s stuck gyp-cache investigation (see README's "Not done
    yet" — real root cause found for `-fno-exceptions`/`-fno-rtti`, fix still elusive;
    five attempts at the `common.gypi`/`binding.gyp` source level have failed
    identically — next step is finding gyp's actual config cache location, not another
    attempt at the same two files).
-3. Dynamic native menu bar / `nativeHost` channel work (README's "Not yet done" under
+4. Dynamic native menu bar / `nativeHost` channel work (README's "Not yet done" under
    the menu-bridge section) — a materially larger undertaking, comparable in scope to
    the JIT/TXM work, not a quick follow-on patch.
 
@@ -153,6 +197,19 @@ doesn't burn time on them:
 - **No native process spawning**, so most debug adapters (anything that
   spawns a debuggee as a child process) won't work. Only in-process/pure-JS
   debug adapters will.
+- **`worker_threads.Worker`'s `resourceLimits.maxOldGenerationSizeMb` appears to be
+  silently clamped to ~304MB on this nodejs-mobile build, regardless of what's
+  requested — found 2026-09-24, confirmed via direct `v8.getHeapStatistics()`
+  instrumentation, not guessed.** Requesting 512MB, 1024MB, or 2048MB all produced the
+  exact same real ~304MB ceiling (`v8HeapLimit=304.0MB` self-reported by the isolate);
+  only a request *smaller* than ~304MB (the original, buggy 256MB) was ever actually
+  honored as requested. This is very likely a bug in how this nodejs-mobile build wires
+  (or fails to wire) `resourceLimits` through to the underlying V8 isolate at Worker
+  creation — a runtime/native-binding issue, not something fixable by changing the
+  requested number from vscode's own TypeScript source. See
+  `vscode-patches/ios-exthost-worker-heap.diff`'s "UPDATE 4" comment for the full
+  evidence. Don't spend time raising these numbers further without new evidence the
+  underlying clamp itself has changed.
 - **Full-text search (Find in Files, Cmd+Shift+F) is very likely completely
   broken, not just degraded — found 2026-09-24, not yet observed failing in
   a real run, but structurally certain.** `ripgrepTextSearchEngine.ts`

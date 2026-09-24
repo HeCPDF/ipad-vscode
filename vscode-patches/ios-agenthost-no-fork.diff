@@ -40,6 +40,20 @@ host's did -- given its own explicit 2048MB budget instead, matching the
 extension host's settled value, rather than waiting to separately
 rediscover the same bug by hitting the crash.
 
+UPDATE 2: ios-exthost-worker-heap.diff's own "UPDATE 4" found, via direct
+heap-stats instrumentation, that this nodejs-mobile build appears to
+silently clamp any worker_threads.Worker's real V8 heap ceiling to
+~304MB regardless of what resourceLimits.maxOldGenerationSizeMb actually
+requests (confirmed 304.0MB reported by v8.getHeapStatistics() itself
+inside a Worker configured for 2048MB) -- very likely a nodejs-mobile
+platform limitation, not something fixable from vscode's own source. The
+same almost-certainly applies to this WorkerClient's own 2048MB request.
+Left as-is: still strictly better than the original inherited-256MB bug
+this patch fixed (256 was smaller than even the ~304MB real ceiling, so
+it was the one value actually being honored, at its own too-small
+number), and would benefit automatically if the underlying nodejs-mobile
+clamping bug is ever fixed.
+
 Index: code-server/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/base/parts/ipc/node/ipc.cp.ts
