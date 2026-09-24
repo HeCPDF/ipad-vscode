@@ -111,6 +111,64 @@ node -e "
   walk('.');
 "
 
+# @vscode/deviceid (a real npm dependency of vscode's own server, not
+# something code-server or this project added) throws "Unsupported
+# platform" unconditionally at require() time unless process.platform is
+# exactly 'win32', 'darwin', or 'linux' (dist/index.js), and its own
+# storage.js has a second, narrower check with the same error message
+# (only 'win32' or 'darwin' pick a real storage directory; everything else,
+# including plain 'linux', hits an else-throw there too -- not exercised
+# here since index.js's guard already rejects first). Confirmed as a real,
+# reproducing crash via a captured node-stdio.log ("Error: Unsupported
+# platform ... @vscode/deviceid/dist/index.js:25:11"), not guessed --
+# meaning nodejs-mobile's embedded runtime reports some process.platform
+# value on iOS that isn't any of those three strings.
+#
+# Rather than hardcode a guess at the exact string nodejs-mobile actually
+# reports (unconfirmed, and could plausibly change across nodejs-mobile
+# versions), broaden both checks by OS family instead: iOS is not Windows
+# and not Linux, so treat "not win32 and not linux" as darwin-like for
+# this package's purposes specifically. This is a reasonable inference
+# independent of the exact platform string -- iOS is Darwin-kernel-based,
+# closer to macOS's storage model than Windows' or Linux's, and
+# storage.js's darwin branch just joins $HOME/Library/Application
+# Support/Microsoft/DeveloperTools, a path structure that's perfectly
+# valid inside this app's own sandboxed container (the same $HOME
+# NodeRuntimeController.swift's configureHomeEnvironment() already makes
+# writable for every other Node subsystem that expects a real home
+# directory).
+node -e "
+  const fs = require('fs');
+  const path = require('path');
+  function patchDeviceIdFile(full) {
+    let text = fs.readFileSync(full, 'utf8');
+    const before = text;
+    text = text.replace(
+      /process\.platform !== \"win32\" &&\s*\n\s*process\.platform !== \"darwin\" &&\s*\n\s*process\.platform !== \"linux\"/,
+      'process.platform === \"win32\" || process.platform === \"linux\"'
+    );
+    text = text.replace(
+      /if \(process\.platform === \"darwin\"\) \{/,
+      'if (process.platform !== \"win32\" && process.platform !== \"linux\") {'
+    );
+    if (text !== before) {
+      fs.writeFileSync(full, text);
+      console.log('patched @vscode/deviceid platform check in ' + full);
+    }
+  }
+  function walk(dir) {
+    for (const name of fs.readdirSync(dir)) {
+      const full = path.join(dir, name);
+      const stat = fs.lstatSync(full);
+      if (stat.isDirectory()) walk(full);
+      else if (stat.isFile() && (full.endsWith('deviceid/dist/index.js') || full.endsWith('deviceid/dist/storage.js'))) {
+        patchDeviceIdFile(full);
+      }
+    }
+  }
+  walk('.');
+"
+
 # Same missing-global-crypto gap as trim-code-server.sh (Node <19 has no
 # bare `crypto` global; only require('crypto').webcrypto). There, the shim
 # was prepended to code-server's own CLI wrapper (out/node/entry.js), a
