@@ -11,35 +11,40 @@ extension host's own, separate V8 isolate, not just stripped like the
 jitless/wasm flags already are.
 
 Confirmed as a real, deterministic bug via a captured node-stdio.log, not
-guessed: the extension host Worker OOMs and gets torn down and restarted
-roughly 15-20 seconds after every single launch --
+guessed: at 256MB, the extension host Worker OOMs and gets torn down and
+restarted roughly 15-20 seconds after every single boot --
 
   Error [ERR_WORKER_OUT_OF_MEMORY]: Worker terminated due to reaching
   memory limit: JS heap out of memory
 
 -- reproducing identically in both the pre- and post-UI-test app launches
-of the same simulator-test.yml run. 256MB is far too little for vscode's
-extension host, which ordinarily runs unconstrained (a real forked OS
-process inheriting the platform's own multi-GB V8 default) on desktop.
-This is not a real device memory-pressure issue either -- it reproduces
-in the Simulator, which has ample host RAM available -- purely a
-self-imposed V8 old-space ceiling, unrelated to iOS's actual jetsam
-memory limit (a separate, much higher ceiling this change doesn't touch).
-A reconnect-and-relaunch cycle already built into vscode's own
-client/server protocol silently recovers (a second Worker takes over),
-which is why this had gone unnoticed: the UI still renders correctly a
-few seconds later, no visible crash, just a slower, wasteful cold start
-on every single boot.
+of the same simulator-test.yml run (run 35969346618). 256MB is far too
+little for vscode's extension host, which ordinarily runs unconstrained
+(a real forked OS process inheriting the platform's own multi-GB V8
+default) on desktop. This is not a real device memory-pressure issue
+either -- it reproduces in the Simulator, which has ample host RAM
+available -- purely a self-imposed V8 old-space ceiling, unrelated to
+iOS's actual jetsam memory limit (a separate, much higher ceiling this
+change doesn't touch). A reconnect-and-relaunch cycle already built into
+vscode's own client/server protocol silently recovers (a second Worker
+takes over), which is why this had gone unnoticed: the UI still renders
+correctly a few seconds later, no visible crash, just a slower, wasteful
+cold start on every single boot.
 
-Fix: give the extension host Worker its own explicit resourceLimits
-(512MB), independent of whatever --max-old-space-size the main thread
-happens to be running with.
+First fix attempt used 512MB -- re-verified via a second
+simulator-test.yml run (35972671722) and found only a marginal
+improvement, not a real fix: the OOM+restart pattern was gone in one of
+that run's two app launches (pre-/post-UI-test) but still present in the
+other, same build and code, apparently non-deterministic depending on
+extension-activation timing/ordering. Raised to 1024MB for real headroom
+instead of chasing the exact minimum that happens to survive one
+particular run.
 
 Index: code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/server/node/extensionHostConnection.ts	2026-09-24 07:40:15.108117997 +0000
-+++ code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts	2026-09-24 07:40:27.917847928 +0000
-@@ -347,15 +347,37 @@
++++ code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts	2026-09-24 08:13:33.105965934 +0000
+@@ -347,15 +347,47 @@
  				// dropped here rather than translated.
  				const disallowedExecArgvPrefixes = ['--max-old-space-size', '--jitless', '--no-jitless', '--expose-wasm', '--no-expose-wasm'];
  				const workerExecArgv = (opts.execArgv ?? []).filter(a => !disallowedExecArgvPrefixes.some(p => a.startsWith(p)));
@@ -72,7 +77,17 @@ Index: code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts
 +				// doesn't touch). Give the extension host its own,
 +				// independent heap budget instead of inheriting the main
 +				// thread's.
-+				const extHostMaxOldGenerationSizeMb = 512;
++				//
++				// UPDATE: 512 was still not consistently enough -- verified
++				// via a captured node-stdio.log from a second
++				// simulator-test.yml run (35972671722): the OOM+restart
++				// pattern was gone in one of the run's two app launches but
++				// still present in the other (same build, same code,
++				// non-deterministic depending on extension-activation
++				// timing/ordering), so 512MB is only a marginal fit, not a
++				// real fix. Raised further for real headroom rather than
++				// chasing the exact minimum.
++				const extHostMaxOldGenerationSizeMb = 1024;
  				const worker = new Worker(FileAccess.asFileUri('bootstrap-fork').fsPath, {
  					argv: args,
  					env,
