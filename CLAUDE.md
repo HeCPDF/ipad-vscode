@@ -23,44 +23,58 @@ investigating again.
 
 ## Where things actually stand — CHECK THIS FIRST
 
-Confirmed this session (2026-09-07), each checked directly rather than trusted from a
-green checkmark:
-- `vscode-reh-web-build.yml` run `33641059792` (pending as of the 2026-09-02 handoff) —
-  **succeeded**.
-- `build.yml` run `34043104925` (2026-09-06, triggered by someone/something between
-  sessions, not recorded anywhere before now) — **succeeded**.
-- `simulator-test.yml` run `34043323244` (2026-09-06) — **succeeded**, and its
-  `simulator-test-results` artifact was downloaded and actually read:
-  `node-stdio-1-pre/post-uitest.log` show the server binding, the extension host Worker
-  launching and staying up, and zero occurrences of every previously-fatal error
-  signature this project has ever hit. `uitest-screenshot-1-2.png`/`-8.png` show the
-  real vscode "Code - OSS" welcome page and Chat panel actually rendered in the
-  WKWebView. Only expected/already-documented errors remain (`spdlog` dlopen,
-  `deviceid` unsupported-platform, `ptyHost`/`spawn sh ENOENT` — no real shell on iOS).
-- A fresh `build.yml` run was also triggered this session (`34087240816`) as a
-  redundant double-check before the pre-existing 09-06 run was found — it **also
-  succeeded**, reproducing the same result. No new commit was needed for either rebuild;
-  `main-yyjpt0`'s HEAD (`6a240d7`) hasn't changed.
+Confirmed this session (2026-09-24), each checked directly rather than trusted from a
+green checkmark. This session found and fixed three real, previously-undiscovered bugs
+via the full `vscode-reh-web-build.yml` → `build.yml` → `simulator-test.yml` loop,
+downloading and actually reading the `simulator-test-results` artifact each time:
 
-**Next session's first move**: there is no pending/unverified build right now. Pick a
-next concrete task from README's "Not done yet" list. In rough order of
+1. **Agent-host `spawn EPERM` fix (`ios-agenthost-no-fork.diff`, already written by a
+   prior session) had a real `tsc` compile error**, caught by a genuine
+   `vscode-reh-web-build.yml` failure (run `35966340204`): `WorkerClient`'s env-building
+   code was typed `Record<string, unknown>`, which `removeDangerousEnvVariables()`
+   rejects, and even fixed, `worker_threads.WorkerOptions.env` requires
+   `Record<string, string>` (no `undefined` values) — stricter than
+   `child_process.ForkOptions.env`. Fixed in commit `b8933e5` (build a
+   `rawEnv: IProcessEnvironment` first, then filter out `undefined`-valued keys before
+   passing to `new Worker(...)`) — confirmed via a clean `vscode-reh-web-build.yml` run
+   (`35967663473`).
+2. **The extension host Worker OOMs and restarts on every single boot — a real,
+   previously-undocumented bug, found by actually reading `node-stdio.log`, not
+   trusting a green checkmark.** `NodeRuntimeController.swift` starts the main process
+   with `--max-old-space-size=256` (chosen for the main thread's own footprint), and
+   `extensionHostConnection.ts`'s iOS `worker_threads` branch was blindly re-deriving
+   the extension host Worker's own `resourceLimits.maxOldGenerationSizeMb` from that
+   same inherited `256`, starving the extension host of memory it actually needs (it
+   normally runs unconstrained as a real forked process on desktop). Root-caused and
+   fixed in `vscode-patches/ios-exthost-worker-heap.diff` (three commits,
+   `854c06e`→`24c572e`→`1b967f1`, each re-verified against a fresh `simulator-test.yml`
+   run before moving on — see that patch file's own comments for the full evidence
+   trail). **Net result, confirmed via a `repeat=2` `simulator-test.yml` run
+   (`35979036132`, 4 total app launches): every launch AFTER the very first one now
+   starts the extension host cleanly with zero OOM, 0/2 in that run (previously 100%
+   crash-and-restart on every boot). The very first launch after a fresh install still
+   OOMs once and self-heals via vscode's own reconnect mechanism (same as before this
+   fix, just now confined to first-run only) — raising the heap ceiling further (tried
+   up to 2048MB) made zero measurable difference to that specific case, so it's very
+   likely not actually a sizing problem; see the patch file's "UPDATE 3" comment and
+   README's "Not done yet" for what's still open there.**
+3. `ServerAgentHostManager: agent host failed to start Error: spawn EPERM` (item 1
+   above) — the underlying fix predates this session (root-caused 2026-09-07); this
+   session only fixed its compile error and confirmed the fixed version still applies
+   and compiles cleanly across the whole 31-patch series.
+
+**Next session's first move**: there is no pending/unverified build right now (HEAD is
+`1b967f1`, `vscode-reh-web-build.yml`/`build.yml`/`simulator-test.yml` all green on it).
+Pick a next concrete task from README's "Not done yet" list. In rough order of
 CI-actionability (things that don't require a physical iPad or a Mac dev environment):
-1. `ServerAgentHostManager: agent host failed to start Error: spawn EPERM` — **root
-   cause located this session** (2026-09-07), not yet fixed. It's vscode's built-in AI
-   chat/agent host ("Build with Agent" panel), not the extension host:
-   `nodeAgentHostStarter.ts` → `ipc.cp.ts`'s `Client` does a real, unconditional
-   `child_process.fork()` with no `_canSendSocket`-style escape hatch, and that file's
-   `Client`/`Server` pair talk over `process.send`/`process.on('message')`, which a
-   `worker_threads.Worker` doesn't have (only `parentPort.postMessage`) — so fixing this
-   needs both sides of the protocol patched in lockstep, not just the launch call. See
-   README's "Located (2026-09-07)" block (in the "extension host still doesn't
-   actually start" section) for the full read of all three source files and why a
-   patch should be scoped to `nodeAgentHostStarter.ts`'s call site specifically rather
-   than `ipc.cp.ts` generally (that file is shared with the file watcher and pty host,
-   both already broken here for unrelated reasons). Not attempted: no CI test exercises
-   the agent host at all, so a patch here can only be verified by "does the build still
-   compile," not by real behavior — decide deliberately whether that's good enough
-   before writing it, rather than shipping it blind.
+1. **The first-launch-only extension host OOM** (see item 2 above) — real root cause
+   not yet found. Raising `maxOldGenerationSizeMb` (tried 512/1024/2048) only fixed the
+   warm-launch case; the cold-launch OOM reproduces at the same ~12-20s wall-clock
+   offset regardless of ceiling, which isn't consistent with a simple sizing problem.
+   Leading suspect (unconfirmed): first-run default-profile extension installation
+   (only ever logged on a fresh install). Next step: instrument that one-time path
+   directly (e.g. log `v8.getHeapStatistics()` periodically during first-run startup)
+   rather than guessing at another heap-size number.
 2. `experiment-sqlite3-ios.yml`'s stuck gyp-cache investigation (see README's "Not done
    yet" — real root cause found for `-fno-exceptions`/`-fno-rtti`, fix still elusive;
    five attempts at the `common.gypi`/`binding.gyp` source level have failed
@@ -177,4 +191,8 @@ not pursued further** — removing the split itself would mean re-plumbing
 how vscode-web's client discovers its backend, a risk category this
 project decided not to take on. Leave it at "label fixed, split itself
 inherent and left alone" unless a future session gets an explicit ask to
-revisit that specific tradeoff.
+revisit that specific tradeoff. Task #19, "Verify agent-host, ptyHost,
+deviceid fixes via full CI loop," is **done** for the compile-error and
+warm-launch fixes described above; the first-launch-only exthost OOM
+finding it surfaced along the way is tracked as its own open item (see
+"Next session's first move" above), not part of #19 itself.

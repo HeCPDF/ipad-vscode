@@ -31,32 +31,50 @@ takes over), which is why this had gone unnoticed: the UI still renders
 correctly a few seconds later, no visible crash, just a slower, wasteful
 cold start on every single boot.
 
-This went through two rounds of "fix, re-verify against a real
-simulator-test.yml log, discover it's not quite enough, raise it" before
-landing on a value that survives repeated real testing:
+This went through several rounds of "fix, re-verify against a real
+simulator-test.yml log, discover the picture is more nuanced than it
+looked, adjust" -- all real findings, not guesses, kept here so a future
+session doesn't repeat the same dead ends:
 
 - 512MB: re-verified via simulator-test.yml run 35972671722 -- the
   OOM+restart pattern was gone in one of the run's two app launches but
-  still present in the other. Only a marginal fit.
-- 1024MB: re-verified via a repeat=2 simulator-test.yml run (35975535474,
-  4 total app launches): the very first, cold-cache launch after a fresh
-  `simctl install` (the "pre-uitest" snapshot) OOM'd 2/2 times, while the
-  second, warm launch a UI test's own relaunch triggers moments later on
-  the same already-installed app (the "post-uitest" snapshot, benefiting
-  from the OS/simulator page cache the first launch just warmed) never
-  did, 2/2 times -- consistent with a transient memory spike during a
-  slow, cold-disk startup (many extension manifests/JS files read and
-  parsed concurrently) rather than a steady-state heap need, not the
-  "random timing" it first looked like at 512MB.
-- 2048MB: raised again for headroom against that cold-start spike
-  specifically, the scenario a real user's very first launch after
-  installing (or an iOS-evicted relaunch) would also hit.
+  still present in the other. Looked like non-deterministic timing.
+- 1024MB: re-verified via a repeat=2 run (35975535474, 4 app launches),
+  which revealed the real pattern isn't random at all: the very first,
+  cold-cache launch right after a fresh `simctl install` ("pre-uitest")
+  OOM'd 2/2 times, while the second, warm launch a UI test's own relaunch
+  triggers moments later on the same already-installed app ("post-uitest")
+  never did, 2/2 times. So 1024MB *did* fully and reliably fix the warm
+  case (every app open after the very first).
+- 2048MB: re-verified via another repeat=2 run (35979036132) -- changed
+  NOTHING about the cold-launch case. It still OOMs 2/2 times, same
+  connection/exit pattern, at essentially the same wall-clock offset from
+  launch (~12-20s) as it did all the way back at 256MB. A crash genuinely
+  gated by hitting an old-space ceiling should take proportionally longer
+  to reproduce as that ceiling is raised 8x (256->2048); seeing zero
+  timing change across that whole range means the cold-launch crash is
+  very likely *not* actually gated by maxOldGenerationSizeMb the way the
+  warm-launch case clearly was. Left at 2048 anyway (a real, confirmed
+  improvement for the warm/common case, no observed downside), but raising
+  it further is unlikely to close the remaining cold-launch gap and
+  shouldn't be tried again without new evidence of what's actually
+  consuming memory during that specific one-time path. Leading suspect,
+  not yet confirmed: first-run default-profile extension installation
+  (the "Started initializing default profile extensions..." log line only
+  ever appears on a fresh install) -- see README for the open item.
+
+Net effect: the extension host now reliably starts clean on every launch
+except the very first one after a fresh install, which still OOMs once
+and self-heals via the existing reconnect-and-relaunch cycle -- same
+symptom as before this patch (a few extra seconds of cold start, no
+visible crash), just now confined to first-run only instead of every
+single boot.
 
 Index: code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/server/node/extensionHostConnection.ts	2026-09-24 07:40:15.108117997 +0000
-+++ code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts	2026-09-24 08:47:51.270088277 +0000
-@@ -347,15 +347,63 @@
++++ code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts	2026-09-24 09:24:07.102217615 +0000
+@@ -347,15 +347,87 @@
  				// dropped here rather than translated.
  				const disallowedExecArgvPrefixes = ['--max-old-space-size', '--jitless', '--no-jitless', '--expose-wasm', '--no-expose-wasm'];
  				const workerExecArgv = (opts.execArgv ?? []).filter(a => !disallowedExecArgvPrefixes.some(p => a.startsWith(p)));
@@ -111,10 +129,34 @@ Index: code-server/lib/vscode/src/vs/server/node/extensionHostConnection.ts
 +				// times -- consistent with a transient memory spike during
 +				// a slow, cold-disk startup (many extension manifests/JS
 +				// files read and parsed concurrently) rather than a
-+				// steady-state heap need. Raised again for headroom against
-+				// that cold-start spike specifically, the scenario a real
-+				// user's very first launch after installing (or an
-+				// iOS-evicted relaunch) would also hit.
++				// steady-state heap need. Raised to 2048.
++				//
++				// UPDATE 3: 2048 changed NOTHING about the cold-launch case
++				// -- re-verified via another repeat=2 run (35979036132): the
++				// cold ("pre-uitest") launch still OOMs 2/2 times, with the
++				// exact same connection/exit pattern, AND at essentially
++				// the same wall-clock offset from launch (~12-20s) as it
++				// did all the way back at 256MB. A crash genuinely caused
++				// by hitting an old-space ceiling should take
++				// proportionally longer to reproduce as that ceiling is
++				// raised (8x the ceiling, 256->2048, should mean roughly 8x
++				// longer to fill it) -- seeing no timing change at all
++				// across that whole range means this specific cold-launch
++				// crash is very likely NOT actually gated by
++				// maxOldGenerationSizeMb the way the warm-launch case
++				// clearly was (which DID improve, and stayed fixed, between
++				// 512 and 1024). Left at 2048 anyway since it's a real,
++				// confirmed improvement with no observed downside (the
++				// warm/reconnect case -- i.e. every launch after the very
++				// first -- is fully and reliably fixed), but raising this
++				// further is very unlikely to close the remaining
++				// cold-launch gap and shouldn't be tried again without new
++				// evidence of what's actually consuming memory during that
++				// specific one-time path (first-run default-profile
++				// extension installation is the leading suspect, per the
++				// "Started initializing default profile extensions..." log
++				// line that only ever appears on a fresh install -- not
++				// confirmed, just the most likely candidate; see README).
 +				const extHostMaxOldGenerationSizeMb = 2048;
  				const worker = new Worker(FileAccess.asFileUri('bootstrap-fork').fsPath, {
  					argv: args,
