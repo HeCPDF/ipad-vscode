@@ -154,6 +154,27 @@ jobs:
             NODE_LOG="$CONTAINER/Documents/Diagnostics/node-stdio.log"
             cp "$NODE_LOG" "artifacts/node-stdio-$i-pre-uitest.log" 2>/dev/null || echo "(no node-stdio.log yet for iteration $i)"
 
+            # vscode's own LogService writes structured, per-service logs
+            # (including exact extension activation timing --
+            # ExtensionService#_doActivateExtension, one line per
+            # extension) to disk under <userDataPath>/logs/<timestamp>/ --
+            # a completely different capture path from node-stdio.log
+            # above (which is just the raw process stdout/stderr redirect
+            # NodeRuntimeController.swift sets up). Not yet known to be
+            # populated usefully by this point (extension activation may
+            # still be in flight, or these logs may only flush on a clean
+            # shutdown) -- grabbed here as a real test of that, not an
+            # assumption it will work. Found via `find` rather than
+            # hardcoding the exact directory structure, since
+            # userDataPath's relationship to --server-data-dir hasn't been
+            # independently confirmed.
+            if [ -n "$CONTAINER" ]; then
+              mkdir -p "artifacts/vscode-logs-$i-pre-uitest"
+              find "$CONTAINER" -path "*/logs/*" -name "*.log" 2>/dev/null | while read -r f; do
+                cp "$f" "artifacts/vscode-logs-$i-pre-uitest/$(echo "$f" | sed 's#.*/logs/##; s#/#__#g')" 2>/dev/null || true
+              done
+            fi
+
             # Backgrounded (not a plain foreground run) so this loop can
             # take periodic screenshots while the UI test suite is
             # actually running -- previously the *only* screenshot this
@@ -185,6 +206,17 @@ jobs:
             NODE_LOG="$CONTAINER/Documents/Diagnostics/node-stdio.log"
             cp "$NODE_LOG" "artifacts/node-stdio-$i-post-uitest.log" 2>/dev/null || echo "(no node-stdio.log for iteration $i)"
             xcrun simctl spawn "$SIM_UDID" log show --predicate 'subsystem CONTAINS "com.hecpdf.ipadvscode"' --last 5m > "artifacts/simulator-log-$i-post-uitest.txt" || true
+
+            # Same vscode-own-LogService capture as the pre-uitest snapshot
+            # above, taken again here since these logs may only flush
+            # (or a cold-launch extension activation may only finish
+            # writing them) after this point.
+            if [ -n "$CONTAINER" ]; then
+              mkdir -p "artifacts/vscode-logs-$i-post-uitest"
+              find "$CONTAINER" -path "*/logs/*" -name "*.log" 2>/dev/null | while read -r f; do
+                cp "$f" "artifacts/vscode-logs-$i-post-uitest/$(echo "$f" | sed 's#.*/logs/##; s#/#__#g')" 2>/dev/null || true
+              done
+            fi
             echo "::endgroup::"
           done
 
