@@ -1,0 +1,258 @@
+TEMPORARY diagnostic instrumentation for the cold-launch extension host OOM's blocking window -- not a real fix, remove once root-caused.
+
+Replaces ios-exthost-activation-diagnostic.diff (reverted in the same commit
+as this patch is added), which bracketed _doActivateExtension and was
+verified via a real simulator-test.yml run to produce ZERO
+"[iOS-DIAG activate]" output before the crash -- proving conclusively that
+no extension's activate() is ever reached before the cold-launch OOM. That
+rules out the "leading suspect" hypothesis recorded in CLAUDE.md from an
+earlier session (typescript-language-features' TS compiler cold-load, or
+similar slow-activation guess) and narrows the search from "which
+extension's activate() is slow" to "what runs during the extension host's
+own bootstrap, before initialize() ever gets far enough to activate
+anything".
+
+This patch brackets every step of that earlier bootstrap sequence instead,
+across the four files that make it up, in call order:
+- src/vs/workbench/api/node/extensionHostProcess.ts: the exthost's actual
+  Node entry point (startExtensionHostProcess) -- createExtHostProtocol,
+  connectToRenderer, and `new ExtensionHostMain(...)` construction.
+- src/vs/workbench/api/common/extensionHostMain.ts: the ExtensionHostMain
+  constructor itself (service collection setup, then handing off to
+  IExtHostExtensionService#initialize() -- fire-and-forget, so the
+  constructor returns before initialize() does any real async work).
+- src/vs/workbench/api/common/extHostExtensionService.ts: initialize()'s
+  own two awaited steps (_beforeAlmostReadyToRunExtensions(),
+  waitForInitializeCall()) and, further downstream, _startExtensionHost()/
+  _handleEagerExtensions() (the '*' eager-activation path, kept
+  instrumented in case bootstrap does get this far and something else
+  blocks there instead).
+- src/vs/workbench/api/node/extHostExtensionService.ts:
+  _beforeAlmostReadyToRunExtensions() is the single richest candidate here
+  -- it eagerly runs createApiFactoryAndRegisterActors() (builds the
+  entire `vscode` namespace's API surface synchronously, hundreds of
+  closures), NodeModuleRequireInterceptor(...).install() (require() hook
+  installation), and connectProxyResolver(...) (which internally calls
+  getExtensionPathIndex() -> fs.realpath() once per built-in extension
+  with an entry point) -- all real, plausible sources of the previously
+  observed multi-second block, all running before any activation event
+  fires. Bracketed step by step to find out which one it actually is.
+
+Every marker logs `Date.now()` (absolute epoch ms) rather than an elapsed
+delta from a shared start time, deliberately -- these markers span three
+separate files/modules with no convenient shared module-scope constant,
+and absolute timestamps let post-hoc analysis compute gaps between any two
+lines in the captured node-stdio.log regardless of which file emitted
+them, the same way the original ~35-second gap was first noticed in
+ios-exthost-worker-heap.diff's own heap-stats instrumentation.
+
+console.error (not process.stderr.write), same reasoning as
+ios-exthost-activation-diagnostic.diff already established: these files
+are shared between the browser and Node extension host contexts, so
+console.error's universal type avoids the DOM-vs-Node ambient timer-type
+problem ios-exthost-heap-diagnostic.diff hit once already, and Node's
+console implementation writes to the real process.stderr fd regardless of
+which console.* method is called -- already confirmed piped into the
+captured node-stdio.log by extensionHostConnection.ts's own
+"<worker><stderr>" forwarding.
+
+Purely additive, no behavior change -- only new console.error calls.
+Meant to be removed (or converted into a real fix, if the culprit turns
+out to be something fixable from vscode's own TypeScript source) once a
+captured log shows which of these bracketed steps actually spans the
+blocking window.
+Index: code-server/lib/vscode/src/vs/workbench/api/common/extHostExtensionService.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/workbench/api/common/extHostExtensionService.ts
++++ code-server/lib/vscode/src/vs/workbench/api/common/extHostExtensionService.ts
+@@ -236,17 +236,23 @@ export abstract class AbstractExtHostExtensionService extends Disposable impleme
+ 	public async initialize(): Promise<void> {
+ 		try {
+ 
++			console.error(`[iOS-DIAG boot] initialize() start, before _beforeAlmostReadyToRunExtensions @${Date.now()}`);
+ 			await this._beforeAlmostReadyToRunExtensions();
++			console.error(`[iOS-DIAG boot] after _beforeAlmostReadyToRunExtensions @${Date.now()}`);
+ 			this._almostReadyToRunExtensions.open();
+ 
++			console.error(`[iOS-DIAG boot] before waitForInitializeCall @${Date.now()}`);
+ 			await this._extHostWorkspace.waitForInitializeCall();
++			console.error(`[iOS-DIAG boot] after waitForInitializeCall @${Date.now()}`);
+ 			performance.mark('code/extHost/ready');
+ 			this._readyToStartExtensionHost.open();
+ 
+ 			if (this._initData.autoStart) {
++				console.error(`[iOS-DIAG boot] before _startExtensionHost @${Date.now()}`);
+ 				this._startExtensionHost();
+ 			}
+ 		} catch (err) {
++			console.error(`[iOS-DIAG boot] initialize() caught error @${Date.now()}`, err);
+ 			errors.onUnexpectedError(err);
+ 		}
+ 	}
+@@ -693,6 +699,7 @@ export abstract class AbstractExtHostExtensionService extends Disposable impleme
+ 
+ 	// Handle "eager" activation extensions
+ 	private _handleEagerExtensions(): Promise<void> {
++		console.error(`[iOS-DIAG boot] _handleEagerExtensions start @${Date.now()}`);
+ 		const starActivation = this._activateByEvent('*', true).then(undefined, (err) => {
+ 			this._logService.error(err);
+ 		});
+@@ -701,7 +708,9 @@ export abstract class AbstractExtHostExtensionService extends Disposable impleme
+ 		const folders = this._extHostWorkspace.workspace ? this._extHostWorkspace.workspace.folders : [];
+ 		const workspaceContainsActivation = this._handleWorkspaceContainsEagerExtensions(folders);
+ 		const remoteResolverActivation = this._handleRemoteResolverEagerExtensions();
+-		const eagerExtensionsActivation = Promise.all([remoteResolverActivation, starActivation, workspaceContainsActivation]).then(() => { });
++		const eagerExtensionsActivation = Promise.all([remoteResolverActivation, starActivation, workspaceContainsActivation]).then(() => {
++			console.error(`[iOS-DIAG boot] eagerExtensionsActivation (star+workspace+remoteResolver) resolved @${Date.now()}`);
++		});
+ 
+ 		Promise.race([eagerExtensionsActivation, timeout(10000)]).then(() => {
+ 			this._activateAllStartupFinished();
+@@ -830,14 +839,23 @@ export abstract class AbstractExtHostExtensionService extends Disposable impleme
+ 		}
+ 		this._started = true;
+ 
++		console.error(`[iOS-DIAG boot] _startExtensionHost start, before readyToStartExtensionHost.wait() @${Date.now()}`);
+ 		return this._readyToStartExtensionHost.wait()
+-			.then(() => this._readyToRunExtensions.open())
++			.then(() => {
++				console.error(`[iOS-DIAG boot] readyToStartExtensionHost resolved, opening readyToRunExtensions @${Date.now()}`);
++				return this._readyToRunExtensions.open();
++			})
+ 			.then(() => {
+ 				// wait for all activation events that came in during workbench startup, but at maximum 1s
++				console.error(`[iOS-DIAG boot] before waitForActivatingExtensions race @${Date.now()}`);
+ 				return Promise.race([this._activator.waitForActivatingExtensions(), timeout(1000)]);
+ 			})
+-			.then(() => this._handleEagerExtensions())
+ 			.then(() => {
++				console.error(`[iOS-DIAG boot] waitForActivatingExtensions race resolved, calling _handleEagerExtensions @${Date.now()}`);
++				return this._handleEagerExtensions();
++			})
++			.then(() => {
++				console.error(`[iOS-DIAG boot] eager extensions activated, _startExtensionHost complete @${Date.now()}`);
+ 				this._eagerExtensionsActivated.open();
+ 				this._logService.info(`Eager extensions activated`);
+ 			});
+Index: code-server/lib/vscode/src/vs/workbench/api/common/extensionHostMain.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/workbench/api/common/extensionHostMain.ts
++++ code-server/lib/vscode/src/vs/workbench/api/common/extensionHostMain.ts
+@@ -172,6 +172,7 @@ export class ExtensionHostMain {
+ 		uriTransformer: IURITransformer | null,
+ 		messagePorts?: ReadonlyMap<string, MessagePort>
+ 	) {
++		console.error(`[iOS-DIAG boot] ExtensionHostMain constructor start @${Date.now()}`);
+ 		this._hostUtils = hostUtils;
+ 		this._rpcProtocol = new RPCProtocol(protocol, null, uriTransformer);
+ 
+@@ -185,6 +186,7 @@ export class ExtensionHostMain {
+ 		services.set(IURITransformerService, new URITransformerService(uriTransformer));
+ 		services.set(IHostUtils, hostUtils);
+ 
++		console.error(`[iOS-DIAG boot] ExtensionHostMain services collection built @${Date.now()}`);
+ 		const instaService: IInstantiationService = new InstantiationService(services, true);
+ 
+ 		instaService.invokeFunction(ErrorHandler.installEarlyHandler);
+@@ -203,11 +205,15 @@ export class ExtensionHostMain {
+ 		// ugly self - inject
+ 		// must call initialize *after* creating the extension service
+ 		// because `initialize` itself creates instances that depend on it
++		console.error(`[iOS-DIAG boot] before accessor.get(IExtHostExtensionService) @${Date.now()}`);
+ 		this._extensionService = instaService.invokeFunction(accessor => accessor.get(IExtHostExtensionService));
++		console.error(`[iOS-DIAG boot] got IExtHostExtensionService, calling initialize() (fire-and-forget) @${Date.now()}`);
+ 		this._extensionService.initialize();
++		console.error(`[iOS-DIAG boot] initialize() call returned synchronously, ExtensionHostMain ctor continuing @${Date.now()}`);
+ 
+ 		// install error handler that is extension-aware
+ 		instaService.invokeFunction(ErrorHandler.installFullHandler);
++		console.error(`[iOS-DIAG boot] ExtensionHostMain constructor body complete @${Date.now()}`);
+ 	}
+ 
+ 	async asBrowserUri(uri: URI): Promise<URI> {
+Index: code-server/lib/vscode/src/vs/workbench/api/node/extHostExtensionService.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/workbench/api/node/extHostExtensionService.ts
++++ code-server/lib/vscode/src/vs/workbench/api/node/extHostExtensionService.ts
+@@ -150,11 +150,14 @@ export class ExtHostExtensionService extends AbstractExtHostExtensionService {
+ 	readonly extensionRuntime = ExtensionRuntime.Node;
+ 
+ 	protected async _beforeAlmostReadyToRunExtensions(): Promise<void> {
++		console.error(`[iOS-DIAG boot] _beforeAlmostReadyToRunExtensions start @${Date.now()}`);
+ 		// make sure console.log calls make it to the render
+ 		this._instaService.createInstance(ExtHostConsoleForwarder);
++		console.error(`[iOS-DIAG boot] ExtHostConsoleForwarder created, before createApiFactoryAndRegisterActors @${Date.now()}`);
+ 
+ 		// initialize API and register actors
+ 		const extensionApiFactory = this._instaService.invokeFunction(createApiFactoryAndRegisterActors);
++		console.error(`[iOS-DIAG boot] createApiFactoryAndRegisterActors done @${Date.now()}`);
+ 
+ 		// Register Download command
+ 		this._instaService.createInstance(ExtHostDownloadService);
+@@ -168,12 +171,14 @@ export class ExtHostExtensionService extends AbstractExtHostExtensionService {
+ 		// Register local file system shortcut
+ 		this._instaService.createInstance(ExtHostDiskFileSystemProvider);
+ 
++		console.error(`[iOS-DIAG boot] before NodeModuleRequireInterceptor install() @${Date.now()}`);
+ 		// Module loading tricks based on `module._load`.
+ 		// `module._load` intercepts `require(...)`.
+ 		// Module loading tricks based on `module.registerHooks`.
+ 		// `module.registerHooks` is a generic interceptor that intercepts `require(...)`, `import ...`, and `import(...)`.
+ 		await this._store.add(this._instaService.createInstance(NodeModuleRequireInterceptor, extensionApiFactory, { mine: this._myRegistry, all: this._globalRegistry }))
+ 			.install();
++		console.error(`[iOS-DIAG boot] NodeModuleRequireInterceptor install() done @${Date.now()}`);
+ 
+ 		performance.mark('code/extHost/didInitAPI');
+ 
+@@ -224,8 +229,11 @@ export class ExtHostExtensionService extends AbstractExtHostExtensionService {
+ 		});
+ 
+ 		// Do this when extension service exists, but extensions are not being activated yet.
++		console.error(`[iOS-DIAG boot] before getConfigProvider @${Date.now()}`);
+ 		const configProvider = await this._extHostConfiguration.getConfigProvider();
++		console.error(`[iOS-DIAG boot] got configProvider, before connectProxyResolver @${Date.now()}`);
+ 		await connectProxyResolver(this._extHostWorkspace, configProvider, this, this._logService, this._mainThreadTelemetryProxy, this._initData, this._store);
++		console.error(`[iOS-DIAG boot] connectProxyResolver done, _beforeAlmostReadyToRunExtensions complete @${Date.now()}`);
+ 		performance.mark('code/extHost/didInitProxyResolver');
+ 	}
+ 
+Index: code-server/lib/vscode/src/vs/workbench/api/node/extensionHostProcess.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/workbench/api/node/extensionHostProcess.ts
++++ code-server/lib/vscode/src/vs/workbench/api/node/extensionHostProcess.ts
+@@ -396,6 +396,7 @@ function connectToRenderer(protocol: IMessagePassingProtocol): Promise<IRenderer
+ }
+ 
+ async function startExtensionHostProcess(): Promise<void> {
++	console.error(`[iOS-DIAG boot] startExtensionHostProcess entered @${Date.now()}`);
+ 
+ 	// Print a console message when rejection isn't handled within N seconds. For details:
+ 	// see https://nodejs.org/api/process.html#process_event_unhandledrejection
+@@ -437,9 +438,12 @@ async function startExtensionHostProcess(): Promise<void> {
+ 	});
+ 
+ 	performance.mark(`code/extHost/willConnectToRenderer`);
++	console.error(`[iOS-DIAG boot] before createExtHostProtocol @${Date.now()}`);
+ 	const protocol = await createExtHostProtocol();
++	console.error(`[iOS-DIAG boot] after createExtHostProtocol, before connectToRenderer @${Date.now()}`);
+ 	performance.mark(`code/extHost/didConnectToRenderer`);
+ 	const renderer = await connectToRenderer(protocol);
++	console.error(`[iOS-DIAG boot] after connectToRenderer @${Date.now()}`);
+ 	performance.mark(`code/extHost/didWaitForInitData`);
+ 	const { initData } = renderer;
+ 	// setup things
+@@ -462,12 +466,14 @@ async function startExtensionHostProcess(): Promise<void> {
+ 		uriTransformer = createURITransformer(initData.remote.authority);
+ 	}
+ 
++	console.error(`[iOS-DIAG boot] before new ExtensionHostMain @${Date.now()}`);
+ 	const extensionHostMain = new ExtensionHostMain(
+ 		renderer.protocol,
+ 		initData,
+ 		hostUtils,
+ 		uriTransformer
+ 	);
++	console.error(`[iOS-DIAG boot] after new ExtensionHostMain (constructor returned) @${Date.now()}`);
+ 
+ 	// rewrite onTerminate-function to be a proper shutdown
+ 	onTerminate = (reason: string) => {
