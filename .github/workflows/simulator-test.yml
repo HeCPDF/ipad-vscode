@@ -157,21 +157,33 @@ jobs:
             # vscode's own LogService writes structured, per-service logs
             # (including exact extension activation timing --
             # ExtensionService#_doActivateExtension, one line per
-            # extension) to disk under <userDataPath>/logs/<timestamp>/ --
-            # a completely different capture path from node-stdio.log
-            # above (which is just the raw process stdout/stderr redirect
-            # NodeRuntimeController.swift sets up). Not yet known to be
-            # populated usefully by this point (extension activation may
-            # still be in flight, or these logs may only flush on a clean
-            # shutdown) -- grabbed here as a real test of that, not an
-            # assumption it will work. Found via `find` rather than
-            # hardcoding the exact directory structure, since
-            # userDataPath's relationship to --server-data-dir hasn't been
-            # independently confirmed.
+            # extension) to disk under <userDataPath>/logs/<timestamp>/ in
+            # a normal desktop/server deployment -- a completely different
+            # capture path from node-stdio.log above (just the raw process
+            # stdout/stderr redirect NodeRuntimeController.swift sets up).
+            # A first attempt at this (searching for */logs/*.log
+            # specifically) found nothing at all -- read
+            # getUserDataPath()/doGetUserDataPath() directly afterward and
+            # found why this app's own configuration may not even reach
+            # that path: it only ever passes --server-data-dir (used
+            # elsewhere for extension storage), never --user-data-dir, and
+            # doGetUserDataPath() only checks the latter; its fallback
+            # (getDefaultUserDataPath) unconditionally throws for any
+            # process.platform outside win32/darwin/linux, which nodejs-mobile's
+            # iOS runtime already isn't (confirmed separately via the
+            # @vscode/deviceid platform-check investigation) -- so
+            # userDataPath/logsHome may simply never be reachable at all in
+            # this configuration, or something else supplies it before it's
+            # ever needed. Broadened to search the *entire* container for
+            # any file with a .log extension (not just paths containing
+            # "logs"), and to dump a full file listing, so the real
+            # on-disk structure is observed directly instead of guessed at
+            # a third time.
             if [ -n "$CONTAINER" ]; then
+              find "$CONTAINER" -type f > "artifacts/container-tree-$i-pre-uitest.txt" 2>/dev/null || true
               mkdir -p "artifacts/vscode-logs-$i-pre-uitest"
-              find "$CONTAINER" -path "*/logs/*" -name "*.log" 2>/dev/null | while read -r f; do
-                cp "$f" "artifacts/vscode-logs-$i-pre-uitest/$(echo "$f" | sed 's#.*/logs/##; s#/#__#g')" 2>/dev/null || true
+              find "$CONTAINER" -name "*.log" 2>/dev/null | while read -r f; do
+                cp "$f" "artifacts/vscode-logs-$i-pre-uitest/$(echo "$f" | sed "s#^$CONTAINER/##; s#/#__#g")" 2>/dev/null || true
               done
             fi
 
@@ -208,13 +220,15 @@ jobs:
             xcrun simctl spawn "$SIM_UDID" log show --predicate 'subsystem CONTAINS "com.hecpdf.ipadvscode"' --last 5m > "artifacts/simulator-log-$i-post-uitest.txt" || true
 
             # Same vscode-own-LogService capture as the pre-uitest snapshot
-            # above, taken again here since these logs may only flush
-            # (or a cold-launch extension activation may only finish
-            # writing them) after this point.
+            # above (broadened the same way -- see that comment), taken
+            # again here since these logs may only flush (or a cold-launch
+            # extension activation may only finish writing them) after
+            # this point.
             if [ -n "$CONTAINER" ]; then
+              find "$CONTAINER" -type f > "artifacts/container-tree-$i-post-uitest.txt" 2>/dev/null || true
               mkdir -p "artifacts/vscode-logs-$i-post-uitest"
-              find "$CONTAINER" -path "*/logs/*" -name "*.log" 2>/dev/null | while read -r f; do
-                cp "$f" "artifacts/vscode-logs-$i-post-uitest/$(echo "$f" | sed 's#.*/logs/##; s#/#__#g')" 2>/dev/null || true
+              find "$CONTAINER" -name "*.log" 2>/dev/null | while read -r f; do
+                cp "$f" "artifacts/vscode-logs-$i-post-uitest/$(echo "$f" | sed "s#^$CONTAINER/##; s#/#__#g")" 2>/dev/null || true
               done
             fi
             echo "::endgroup::"
