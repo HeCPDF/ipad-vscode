@@ -1,0 +1,93 @@
+TEMPORARY diagnostic instrumentation for the cold-launch extension host OOM's ~35-second blocking window -- not a real fix, remove once root-caused.
+
+ios-exthost-worker-heap.diff's own "UPDATE 4" comment documents a real,
+captured ~35-second gap with zero diagnostic output (the event loop fully
+blocked) between a heap-stats reading and the eventual
+ERR_WORKER_OUT_OF_MEMORY crash on a cold launch specifically. WHAT runs
+during that window is still unknown.
+
+vscode's own LogService already logs exactly this
+("ExtensionService#_doActivateExtension <id>, startup: ..., activationEvent: ...")
+for every single extension activation, in AbstractExtHostExtensionService
+-- but confirmed (by capturing this app's entire on-disk container tree
+in a real simulator-test.yml run and finding no exthost-related log file
+anywhere) that this LogService line never reaches any artifact this
+project's CI can see. Only the agent host's own separate "ahp" JSONL
+protocol logs are written to disk under
+vscode-server-data/data/logs/<timestamp>/ -- a real, useful discovery in
+its own right, but a dead end for finding out what the extension host
+itself is doing.
+
+Adds console.error() calls directly around the activation Promise chain
+in _doActivateExtension instead: start, "loaded, calling activate()", and
+done, each with an elapsed-ms timestamp and the extension's identifier.
+console.error (not process.stderr.write) specifically because this file
+(src/vs/workbench/api/common/extHostExtensionService.ts) is shared
+between the browser and Node extension host contexts -- console.error's
+type is universal, avoiding the DOM-vs-Node ambient-type problem
+ios-exthost-heap-diagnostic.diff already hit and fixed once for
+setInterval/.unref(). Node's console implementation writes to the real
+process.stderr file descriptor regardless of which console.* method is
+called, and that IS already piped into the parent's captured
+node-stdio.log by extensionHostConnection.ts's existing "<worker><stderr>"
+forwarding -- already confirmed working for the unrelated "WebAssembly is
+not defined" promise-rejection message seen in every previously-captured
+log.
+
+Purely additive, no behavior change to activation itself -- only new
+console.error calls. Meant to be removed (or converted into a real fix)
+once a captured log shows which extension's activation is the one that
+blocks for ~35 seconds on a cold launch.
+
+Index: code-server/lib/vscode/src/vs/workbench/api/common/extHostExtensionService.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/workbench/api/common/extHostExtensionService.ts
++++ code-server/lib/vscode/src/vs/workbench/api/common/extHostExtensionService.ts
+@@ -504,6 +504,34 @@
+ 		this._logService.info(`ExtensionService#_doActivateExtension ${extensionDescription.identifier.value}, startup: ${reason.startup}, activationEvent: '${reason.activationEvent}'${extensionDescription.identifier.value !== reason.extensionId.value ? `, root cause: ${reason.extensionId.value}` : ``}`);
+ 		this._logService.flush();
+
++		// iOS DIAGNOSTIC (temporary, not a real fix): confirmed via
++		// ios-exthost-worker-heap.diff's own "UPDATE 4" that the extension
++		// host Worker's cold-launch OOM has a real ~35-second
++		// event-loop-blocked window before the crash, but WHAT runs during
++		// it is unknown -- vscode's own LogService line just above this
++		// (which would otherwise show exactly which extension is
++		// activating) never reaches any artifact this project's CI
++		// captures: confirmed by capturing the app's entire on-disk
++		// container tree in a real simulator-test.yml run and finding no
++		// exthost-related log file anywhere (only the agent host's own
++		// separate "ahp" JSONL protocol logs exist under
++		// vscode-server-data/data/logs/<timestamp>/ -- a real, useful
++		// discovery in its own right, but not this one). console.error
++		// here instead: Node's console implementation writes to the real
++		// process.stderr file descriptor regardless of which console.*
++		// method is called, and that IS already piped into the parent's
++		// captured node-stdio.log by extensionHostConnection.ts's existing
++		// "<worker><stderr>" forwarding -- confirmed working for the
++		// unrelated "WebAssembly is not defined" promise-rejection message
++		// already seen in every captured log. console.error (not
++		// process.stderr.write) specifically because this file is shared
++		// between the browser and Node extension host contexts (only the
++		// Node one can actually crash this way, but console.error's type
++		// is universal, avoiding the DOM-vs-Node timer-type problem
++		// ios-exthost-heap-diagnostic.diff already hit and fixed once).
++		const __iosDiagActivateStart = Date.now();
++		console.error(`[iOS-DIAG activate] start ${extensionDescription.identifier.value}`);
++
+ 		const isESM = this._isESM(extensionDescription);
+
+ 		const extensionInternalStore = new DisposableStore(); // disposables that follow the extension lifecycle
+@@ -514,10 +542,12 @@
+ 				: this._loadCommonJSModule<IExtensionModule>(extensionDescription, joinPath(extensionDescription.extensionLocation, entryPoint), activationTimesBuilder),
+ 			this._loadExtensionContext(extensionDescription, extensionInternalStore)
+ 		]).then(values => {
++			console.error(`[iOS-DIAG activate] loaded ${extensionDescription.identifier.value} after ${Date.now() - __iosDiagActivateStart}ms, calling activate()`);
+ 			performance.mark(`code/extHost/willActivateExtension/${extensionDescription.identifier.value}`);
+ 			return AbstractExtHostExtensionService._callActivate(this._logService, extensionDescription.identifier, values[0], values[1], extensionInternalStore, activationTimesBuilder);
+ 		}).then((activatedExtension) => {
+ 			performance.mark(`code/extHost/didActivateExtension/${extensionDescription.identifier.value}`);
++			console.error(`[iOS-DIAG activate] done ${extensionDescription.identifier.value} after ${Date.now() - __iosDiagActivateStart}ms total`);
+ 			return activatedExtension;
+ 		});
+ 	}
