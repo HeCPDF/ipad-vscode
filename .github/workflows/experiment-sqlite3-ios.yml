@@ -170,6 +170,67 @@ jobs:
           echo "attempt outcome: ${{ steps.attempt.outcome }}"
           find /tmp/sqlite3-src/sqlite3-module -iname "*.node" -o -iname "*ios*" 2>&1 || true
 
+      - name: Inspect the exact three -I gypi includes gyp actually used, then try patching nodejs-mobile-gyp's own addon.gypi (round 3)
+        # The generated build/vscode-sqlite3.target.mk's own regen_makefile
+        # rule (confirmed by reading its literal cmd_regen_makefile line in
+        # a prior run of this workflow) spells out gyp's exact include
+        # chain: -I<module>/build/config.gypi -I<nodejs-mobile-gyp>/addon.gypi
+        # -I<libnode>/include/node/common.gypi. That same prior run's
+        # "patch every common.gypi under /tmp" step printed zero "patched: "
+        # lines -- not an error, a real negative result: the actual
+        # common.gypi gyp includes here genuinely does not contain
+        # "fno-exceptions" at all, so three whole rounds of patching it
+        # could never have had any effect, explaining exactly why generated
+        # Makefiles kept showing the unpatched flags. That leaves
+        # nodejs-mobile-gyp's own bundled addon.gypi as the only other
+        # candidate in the include chain -- a prior investigation claimed
+        # to have already checked it and found no mention of
+        # exceptions/rtti, but did not record which exact file path it
+        # read, and this tool resolves nodejs-mobile-gyp from deep inside
+        # prebuild-for-nodejs-mobile's own nested node_modules (not any
+        # top-level copy) -- the same "wrong nested copy" class of mistake
+        # already found once for nodejs-mobile-gyp itself and once for
+        # common.gypi's own location. Reading this exact resolved path
+        # directly, then patching and rebuilding, settles it either way.
+        run: |
+          set -x
+          CONFIG_GYPI=/private/tmp/sqlite3-src/sqlite3-module/build/config.gypi
+          ADDON_GYPI=/private/tmp/prebuild-tool/node_modules/prebuild-for-nodejs-mobile/node_modules/nodejs-mobile-gyp/addon.gypi
+          COMMON_GYPI=/private/tmp/prebuild-tool/node_modules/prebuild-for-nodejs-mobile/node_modules/nodejs-mobile-react-native/ios/libnode/include/node/common.gypi
+
+          for f in "$CONFIG_GYPI" "$ADDON_GYPI" "$COMMON_GYPI"; do
+            echo "=== $f ==="
+            if [ -f "$f" ]; then
+              grep -n "exceptions\|rtti\|embed-bitcode\|embed_bitcode" "$f" || echo "(no exceptions/rtti/bitcode mentions)"
+            else
+              echo "(does not exist)"
+            fi
+          done
+
+          echo "=== attempting to patch addon.gypi if it's the culprit ==="
+          if [ -f "$ADDON_GYPI" ] && grep -q "fno-exceptions\|fno_exceptions" "$ADDON_GYPI"; then
+            cp "$ADDON_GYPI" "$ADDON_GYPI.bak"
+            sed -i.bak2 \
+              -e "s/'-fno-rtti', *'-fno-exceptions', */'-frtti', '-fexceptions', /" \
+              -e "s/\"-fno-rtti\", *\"-fno-exceptions\", */\"-frtti\", \"-fexceptions\", /" \
+              "$ADDON_GYPI"
+            echo "patched addon.gypi, diff:"
+            diff "$ADDON_GYPI.bak" "$ADDON_GYPI" || true
+          else
+            echo "addon.gypi does not mention fno-exceptions -- not the culprit, or path is wrong"
+          fi
+
+      - name: Attempt ios-arm64 prebuild (round 3, after patching addon.gypi)
+        id: attempt3
+        continue-on-error: true
+        env:
+          PYTHON: /usr/bin/python3
+          npm_config_python: /usr/bin/python3
+        run: |
+          cd /tmp/sqlite3-src/sqlite3-module
+          rm -rf build
+          /tmp/prebuild-tool/node_modules/.bin/prebuild-for-nodejs-mobile ios-arm64 --verbose 2>&1 | tee /tmp/prebuild-round3.log
+
       - name: Dump generated Makefile/.mk rules mentioning exceptions
         # Three attempts at fixing this from the gyp-source level
         # (env vars, target dependency, target cflags_cc) all left the
